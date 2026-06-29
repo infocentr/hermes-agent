@@ -1678,6 +1678,31 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
+def _apply_journal_policy(conn: sqlite3.Connection, *, db_label: str, default_delete: bool = False) -> None:
+    """Apply the configured Kanban journal policy to an open connection."""
+    policy = os.environ.get("HERMES_KANBAN_JOURNAL", "").strip().lower()
+    if policy == "delete" or (not policy and default_delete):
+        try:
+            current = conn.execute("PRAGMA journal_mode").fetchone()
+            if current and str(current[0]).lower() == "wal" and policy != "delete":
+                return
+        except sqlite3.OperationalError:
+            pass
+        mode = conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+        if str(mode).lower() != "delete":
+            raise RuntimeError(f"{db_label}: expected journal_mode=delete, got {mode}")
+        return
+
+    if policy == "wal":
+        mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        if str(mode).lower() != "wal":
+            raise RuntimeError(f"{db_label}: expected journal_mode=wal, got {mode}")
+        return
+
+    from hermes_state import apply_wal_with_fallback
+    apply_wal_with_fallback(conn, db_label=db_label)
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1723,8 +1748,7 @@ def connect(
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                _apply_journal_policy(conn, db_label=f"kanban.db ({path})", default_delete=db_path is not None)
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
@@ -1748,15 +1772,10 @@ def connect(
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
-                # WAL activation can take an exclusive lock while SQLite creates the
-                # sidecar files for a fresh database. Keep it in the same process-local
-                # critical section as schema initialization so concurrent gateway
-                # startup threads do not race before _INITIALIZED_PATHS is populated.
-                # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-                # falls back to DELETE with one WARNING so kanban stays usable there.
-                # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                # Apply the deployment's journal policy before schema work so
+                # long-lived gateway/dashboard processes cannot flip the board
+                # back to WAL when this host explicitly requires DELETE.
+                _apply_journal_policy(conn, db_label=f"kanban.db ({path})", default_delete=db_path is not None)
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
                 conn.execute("PRAGMA synchronous=FULL")

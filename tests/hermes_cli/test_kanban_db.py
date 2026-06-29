@@ -3031,6 +3031,43 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
 
 
 
+
+# ---------------------------------------------------------------------------
+# Journal policy override
+# ---------------------------------------------------------------------------
+
+def test_connect_respects_explicit_delete_journal_policy(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_JOURNAL", "delete")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    conn = kb.connect()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    finally:
+        conn.close()
+
+
+def test_cached_connect_respects_explicit_delete_journal_policy(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_JOURNAL", "delete")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    first = kb.connect()
+    first.close()
+    second = kb.connect()
+    try:
+        assert second.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    finally:
+        second.close()
+
+
 # ---------------------------------------------------------------------------
 # NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
 # ---------------------------------------------------------------------------
@@ -3058,6 +3095,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_JOURNAL", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     # Clear module cache so a fresh connect() is attempted
