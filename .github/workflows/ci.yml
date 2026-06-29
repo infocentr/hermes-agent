@@ -131,6 +131,7 @@ jobs:
 
   osv-scanner:
     name: OSV scan
+    if: github.event_name != 'push' || github.repository != 'infocentr/hermes-agent-private'
     uses: ./.github/workflows/osv-scanner.yml
 
   # ─────────────────────────────────────────────────────────────────────
