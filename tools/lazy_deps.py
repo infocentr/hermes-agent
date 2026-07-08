@@ -224,6 +224,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "mcp==1.26.0",
         "starlette==1.3.1",  # Keep in sync with pyproject [computer-use]
     ),
+    # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
+    "tool.trace_upload": ("huggingface-hub==1.2.3",),
 }
 
 
