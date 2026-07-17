@@ -309,6 +309,46 @@ _INCOMPLETE_AGENT_RESPONSE_PATTERNS = (
 )
 
 
+# Report-start markers for autonomous agents whose backing model may prepend its
+# raw chain-of-thought as plain content. Reasoning models (e.g. kimi-k2.7-code)
+# that don't route "thinking" to a separate channel will happily emit dozens of
+# lines of scratch-work ("Let's count: journal(7)+... Good.") and then the actual
+# report — all in the content channel — no matter how forcefully the prompt
+# forbids preamble. When a delivered response contains one of these markers,
+# everything before the LAST occurrence is model scratch-work: we strip it from
+# the *delivered* message only. The full raw output is still saved verbatim by
+# save_job_output() for audit, so nothing is lost. A response WITHOUT any marker
+# is returned unchanged, so this is a strict no-op for every other cron job.
+# (system-improvement-agent 5800656c2297 leaked ~40 lines before its report.)
+_AGENT_REPORT_MARKERS = (
+    "🔧 **System Improvement Agent**",
+    "🔧 System Improvement Agent",
+)
+
+
+def _strip_reasoning_preamble(text: str) -> str:
+    """Drop a reasoning-model's leaked scratch-work before a known report marker.
+
+    Anchors on the raw marker substring (the real report's marker is the LAST
+    occurrence — any earlier one is the model quoting the template to itself),
+    keeps everything from there on, and left-trims. Returns ``text`` unchanged
+    when no marker is present or the marker is already at the very start, so it
+    cannot alter clean reports or any job that never emits these markers.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    best = -1
+    for marker in _AGENT_REPORT_MARKERS:
+        idx = text.rfind(marker)
+        if idx > best:
+            best = idx
+    if best <= 0:
+        # -1 == marker absent; 0 == report already starts the message. Neither
+        # has preamble to strip.
+        return text
+    return text[best:].lstrip()
+
+
 def _cron_final_response_incomplete(final_response: str) -> str | None:
     """Return a reason when a cron agent reports unfinished guardrail work.
 
@@ -3668,6 +3708,12 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # If the agent responded with [SILENT], skip delivery (but
             # output is already saved above).  Failed jobs always deliver.
             deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # Strip any leaked reasoning-model scratch-work that precedes the
+            # agent's report marker (no-op when no marker is present, so it only
+            # affects jobs that emit one). Delivery-only: the full raw output was
+            # already saved verbatim above. See _strip_reasoning_preamble.
+            if success:
+                deliver_content = _strip_reasoning_preamble(deliver_content)
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
