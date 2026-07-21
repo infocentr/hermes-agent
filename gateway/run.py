@@ -1046,8 +1046,28 @@ def _select_cached_agent_history(
     Returns ``persisted_history`` unchanged unless the live copy is a longer
     list, in which case a copy of the live transcript is returned.
     """
-    if isinstance(live_history, list) and len(live_history) > len(persisted_history):
-        return list(live_history)
+    if not isinstance(live_history, list):
+        return persisted_history
+
+    # Compare replayable rows, not the raw in-memory list. Gateway-generated
+    # restore handoffs can leave an empty user row in ``_session_messages``;
+    # _build_gateway_agent_history() correctly drops that row from the
+    # persisted replay, so counting it here creates a permanent false
+    # disk=N/memory=N+1 warning and replaces the cleaned history with the dirty
+    # live copy. Preserve rich tool rows even when their content is empty.
+    replayable_live = [
+        msg for msg in live_history
+        if isinstance(msg, dict)
+        and msg.get("role") not in {None, "", "system", "session_meta"}
+        and (
+            bool(msg.get("content"))
+            or "tool_calls" in msg
+            or "tool_call_id" in msg
+            or msg.get("role") == "tool"
+        )
+    ]
+    if len(replayable_live) > len(persisted_history):
+        return replayable_live
     return persisted_history
 
 

@@ -333,6 +333,19 @@ def test_repair_noop_db_uses_already_healthy_shortcut(tmp_path):
     assert report["strategy"] == "already_healthy"
 
 
+def test_select_cached_agent_history_ignores_nonreplayable_empty_rows():
+    """A persisted empty restore row must not masquerade as FTS lag."""
+    from gateway.run import _select_cached_agent_history
+
+    persisted = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+    ]
+    live = persisted + [{"role": "user", "content": ""}]
+
+    assert _select_cached_agent_history(persisted, live) is persisted
+
+
 def test_select_cached_agent_history_prefers_longer_live_transcript():
     """Gateway guard keeps the live transcript when persisted history lags."""
     from gateway.run import _select_cached_agent_history
