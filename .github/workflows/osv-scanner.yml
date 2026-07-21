@@ -14,114 +14,111 @@ name: OSV-Scanner
 # code patterns in PR diffs) by covering the orthogonal "currently-pinned
 # dep became known-vulnerable" case.
 #
-# Private mirrors may not have GitHub Code Security / Advanced Security,
-# so do not depend on SARIF upload to GitHub Code Scanning. Run OSV directly,
-# keep the JSON/SARIF files as workflow artifacts, and print a concise summary.
+# Uses Google's officially-recommended reusable workflow, pinned by SHA.
+# Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
+# fail-on-vuln is disabled so the job does not block merges on pre-existing
+# vulnerabilities in pinned deps that we may need to patch deliberately.
+#
+# The reusable workflow can't emit custom outputs, so a wrapper job
+# downloads the SARIF result and summarizes the vulnerability count into
+# a review_status for the unified PR comment.
 
 on:
   workflow_call:
   schedule:
     # Weekly scan against main — catches CVEs published after merge for
     # deps that haven't changed since.
-    - cron: "0 9 * * 1"
+    - cron: '0 9 * * 1'
   workflow_dispatch:
 
 permissions:
+  # Required to upload SARIF file to CodeQL. See: https://github.com/github/codeql-action/issues/2117
   actions: read
   contents: read
+  security-events: write
 
 jobs:
   scan:
     name: Scan lockfiles
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+    with:
+      # Scan explicit lockfiles rather than recursing, so we only look at
+      # the three sources of truth and skip vendored / test / worktree dirs.
+      scan-args: |-
+        --lockfile=uv.lock
+        --lockfile=package-lock.json
+        --lockfile=website/package-lock.json
+      fail-on-vuln: false
+
+  emit-status:
+    name: Emit review status
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    needs: scan
+    if: always()
+    outputs:
+      review_status: ${{ steps.emit.outputs.review_status }}
     steps:
-      - name: Check out repository
+      - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
 
-      - name: Run OSV scanner JSON report
-        id: osv-json
+      - name: Download SARIF result
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: osv-results
+          path: /tmp/osv-results
         continue-on-error: true
-        uses: google/osv-scanner-action/osv-scanner-action@8dc09193bb540e09b23da07ad7e30bd33bf87018 # v2.3.8
-        with:
-          scan-args: |-
-            --output-file=results.json
-            --format=json
-            --lockfile=uv.lock
-            --lockfile=package-lock.json
-            --lockfile=website/package-lock.json
 
-      - name: Run OSV scanner SARIF report
-        id: osv-sarif
-        continue-on-error: true
-        uses: google/osv-scanner-action/osv-scanner-action@8dc09193bb540e09b23da07ad7e30bd33bf87018 # v2.3.8
-        with:
-          scan-args: |-
-            --output-file=results.sarif
-            --format=sarif
-            --lockfile=uv.lock
-            --lockfile=package-lock.json
-            --lockfile=website/package-lock.json
-
-      - name: Summarize OSV findings
-        if: always()
+      - name: Emit review_status
+        id: emit
         run: |
-          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
-          import json
-          from collections import Counter
-          from pathlib import Path
+          set -euo pipefail
+          STATUS="[]"
 
-          path = Path("results.json")
-          print("# OSV-Scanner summary")
-          if not path.exists():
-              print("\nNo results.json was produced; inspect the workflow logs.")
-              raise SystemExit(0)
+          if [ -f /tmp/osv-results/osv-results.sarif ]; then
+            # Count vulnerabilities from the SARIF file
+            VULN_COUNT=$(python3 -c "
+          import json, sys
+          try:
+              with open('/tmp/osv-results/osv-results.sarif') as f:
+                  data = json.load(f)
+              count = 0
+              vulns = []
+              for run in data.get('runs', []):
+                  for result in run.get('results', []):
+                      count += 1
+                      rule_id = result.get('ruleId', 'unknown')
+                      message = result.get('message', {}).get('text', '')
+                      loc = result.get('locations', [{}])[0].get('physicalLocation', {}).get('artifactLocation', {}).get('uri', '')
+                      vulns.append(f'- {rule_id} in {loc}: {message}')
+              print(count)
+              if vulns:
+                  print('\n'.join(vulns[:20]), file=sys.stderr)
+          except Exception:
+              print(0)
+          ")
 
-          data = json.loads(path.read_text())
-          results = data.get("results", [])
-          vulns = []
-          by_file = Counter()
-          by_package = Counter()
+            VULN_DETAIL=""
+            if [ "$VULN_COUNT" -gt 0 ] 2>/dev/null; then
+              VULN_PLURAL=$([ "$VULN_COUNT" -eq 1 ] && echo "y" || echo "ies")
+              VULN_DETAIL=$(python3 -c "
+          import json, sys
+          try:
+              with open('/tmp/osv-results/osv-results.sarif') as f:
+                  data = json.load(f)
+              vulns = []
+              for run in data.get('runs', []):
+                  for result in run.get('results', []):
+                      rule_id = result.get('ruleId', 'unknown')
+                      loc = result.get('locations', [{}])[0].get('physicalLocation', {}).get('artifactLocation', {}).get('uri', '')
+                      vulns.append(f'- {rule_id} in {loc}')
+              print(json.dumps('\n'.join(vulns[:20])))
+          except Exception:
+              print(json.dumps(''))
+          ")
+              STATUS="[{\"source\":\"osv scan\",\"results\":[{\"kind\":\"warning\",\"title\":\"OSV vulnerability scan\",\"summary\":\"${VULN_COUNT} known vulnerabilit${VULN_PLURAL} found in pinned dependencies.\",\"detail\":${VULN_DETAIL},\"how_to_fix\":\"Review the findings in the [Security tab](../../security/code-scanning). Update the affected dependencies if a patched version is available.\"}]}]"
+            else
+              STATUS="[]"
+            fi
+          fi
 
-          for result in results:
-              source = result.get("source", {})
-              lockfile = source.get("path") or source.get("lockfile") or "unknown"
-              packages = result.get("packages", [])
-              for package in packages:
-                  package_info = package.get("package", {})
-                  name = package_info.get("name", "unknown")
-                  version = package_info.get("version", "unknown")
-                  for vuln in package.get("vulnerabilities", []):
-                      vuln_id = vuln.get("id", "unknown")
-                      aliases = ", ".join(vuln.get("aliases", []))
-                      vulns.append((lockfile, name, version, vuln_id, aliases))
-                      by_file[lockfile] += 1
-                      by_package[f"{name}@{version}"] += 1
-
-          print(f"\nTotal vulnerability findings: **{len(vulns)}**")
-          if by_file:
-              print("\n## By lockfile")
-              for lockfile, count in by_file.most_common():
-                  print(f"- `{lockfile}`: {count}")
-          if by_package:
-              print("\n## Top packages")
-              for package, count in by_package.most_common(20):
-                  print(f"- `{package}`: {count}")
-          if vulns:
-              print("\n## First 50 findings")
-              for lockfile, name, version, vuln_id, aliases in vulns[:50]:
-                  suffix = f" ({aliases})" if aliases else ""
-                  print(f"- `{lockfile}`: `{name}@{version}` — `{vuln_id}`{suffix}")
-          PY
-
-      - name: Upload OSV artifacts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: osv-scanner-results
-          path: |
-            results.json
-            results.sarif
-          if-no-files-found: warn
+          echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
