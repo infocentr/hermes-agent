@@ -96,6 +96,26 @@ class WSTransport:
         self._loop = loop
         self._peer = peer
         self._closed = False
+        # Token-coalescing buffer (CF-2). Streamed token frames land here and a
+        # short timer flushes the batch. The lock guards the buffer + the
+        # "armed" flag against the worker threads that call write(); the timer
+        # handle is only ever touched on the loop thread.
+        self._token_lock = threading.Lock()
+        self._pending_tokens: list[str] = []
+        self._token_flush_handle: asyncio.TimerHandle | None = None
+        self._token_flush_armed = False
+        # Buffer mutation is protected by the thread lock above; actual socket
+        # writes need an async boundary because several batches can be queued on
+        # the owning loop while it recovers from a stall.
+        self._send_lock = asyncio.Lock()
+
+    @staticmethod
+    def _is_streaming_frame(obj: dict) -> bool:
+        """True for high-frequency per-token frames eligible for coalescing."""
+        params = obj.get("params") if isinstance(obj, dict) else None
+        if not isinstance(params, dict):
+            return False
+        return params.get("type") in _STREAMING_EVENT_TYPES
 
     def write(self, obj: dict) -> bool:
         if self._closed:
@@ -110,12 +130,12 @@ class WSTransport:
 
         if on_loop:
             # Fire-and-forget — don't block the loop waiting on itself.
-            self._loop.create_task(self._safe_send(line))
+            self._loop.create_task(self._safe_send_many([line]))
             return True
 
         try:
             from agent.async_utils import safe_schedule_threadsafe
-            fut = safe_schedule_threadsafe(self._safe_send(line), self._loop)
+            fut = safe_schedule_threadsafe(self._safe_send_many([line]), self._loop)
             if fut is None:
                 self._closed = True
                 return False
@@ -127,7 +147,7 @@ class WSTransport:
             # already scheduled and will flush once the loop breathes — latching
             # _closed here permanently silenced live windows after one slow
             # write (the "subagent window shows zero streaming" bug). Unblock
-            # the worker thread and keep the transport alive; _safe_send latches
+            # the worker thread and keep the transport alive; _safe_send_many latches
             # on a real socket error when the frame actually fails.
             _log.warning(
                 "ws write slow (loop stalled >%ss) peer=%s — frame left in flight",
@@ -146,18 +166,36 @@ class WSTransport:
         """Send from the owning event loop. Awaits until the frame is on the wire."""
         if self._closed:
             return False
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
+        # Flush any buffered streamed tokens ahead of this frame (RPC response /
+        # control frame) as ONE serialized batch. Sending them in two lock
+        # acquisitions would let a later batch slip between the pending tokens
+        # and the frame that drained them.
+        with self._token_lock:
+            batch = self._pending_tokens
+            self._pending_tokens = []
+            batch.append(json.dumps(obj, ensure_ascii=False))
+        await self._safe_send_many(batch)
         return not self._closed
 
-    async def _safe_send(self, line: str) -> None:
-        try:
-            await self._ws.send_text(line)
-        except Exception as exc:
-            self._closed = True
-            _log.warning(
-                "ws send failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
-            )
+    async def _safe_send_many(self, lines: list[str]) -> None:
+        """Send one indivisible batch of pre-serialized frames in wire order."""
+        async with self._send_lock:
+            if self._closed:
+                return
+            try:
+                for line in lines:
+                    if self._closed:
+                        return
+                    await self._ws.send_text(line)
+            except Exception as exc:
+                # Latch while still holding the writer lock so queued batches
+                # observe the failure before they get a chance to touch the
+                # socket.
+                self._closed = True
+                _log.warning(
+                    "ws send failed peer=%s error_type=%s error=%s",
+                    self._peer, type(exc).__name__, exc,
+                )
 
     def close(self) -> None:
         self._closed = True
@@ -235,6 +273,9 @@ async def handle_ws(ws: Any) -> None:
         if ready_ok:
             # Live-apply skins Hermes activates mid-conversation.
             server._ensure_skin_watcher()
+            # Track this peer for session-less global broadcasts (skin.changed
+            # from the background watcher) — write_json can't route those.
+            server.register_live_transport(transport)
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
@@ -335,6 +376,7 @@ async def handle_ws(ws: Any) -> None:
         reaped_sessions = 0
         detached_sessions = 0
         if transport is not None:
+            server.unregister_live_transport(transport)
             transport.close()
 
             # Reap sessions this transport owned (close_on_disconnect sidecar
