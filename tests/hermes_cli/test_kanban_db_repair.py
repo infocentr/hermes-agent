@@ -361,6 +361,11 @@ def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
     db_path = tmp_path / "kanban.db"
     _build_board_db(db_path, tasks=1)
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    # Local carry: kanban.db defaults to DELETE journaling (_apply_journal_policy,
+    # for the DELETE-mode watchdog + multi-service sharing). This test is
+    # WAL-specific, so opt into WAL explicitly — otherwise connect() produces no
+    # -wal sidecar and the checkpoint assertion below is vacuous.
+    monkeypatch.setenv("HERMES_KANBAN_JOURNAL", "wal")
     monkeypatch.setattr(kb, "_LAST_WAL_CHECKPOINT", {})
 
     conn = kb.connect(db_path=db_path)
