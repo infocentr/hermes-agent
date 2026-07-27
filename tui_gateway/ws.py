@@ -36,24 +36,12 @@ from tui_gateway import server
 
 _log = logging.getLogger(__name__)
 
-def _maybe_start_ws_mcp_discovery() -> None:
-    """Start background MCP discovery for WS clients unless opted out.
-
-    Server deployments opt out with HERMES_DASHBOARD_NO_MCP=1 — the same
-    contract as ``cmd_dashboard``. The dashboard Chat tab reaches
-    ``handle_ws`` too, so without this guard every chat session respawns
-    the stdio MCP children the flag was meant to prevent. Desktop app
-    processes don't set the flag and keep discovery.
-    """
-    if os.environ.get("HERMES_DASHBOARD_NO_MCP") == "1":
-        _log.info("ws MCP discovery skipped (HERMES_DASHBOARD_NO_MCP=1)")
-        return
-    from hermes_cli.mcp_startup import start_background_mcp_discovery
-
-    start_background_mcp_discovery(
-        logger=_log,
-        thread_name="tui-ws-mcp-discovery",
-    )
+# NO_MCP carry note: the WS sidecar used to start MCP discovery here (gated by
+# HERMES_DASHBOARD_NO_MCP). Retired 2026-07-24 — upstream refactored discovery
+# ownership away from the WS transport (test_ws_does_not_own_mcp_discovery_startup
+# enforces it; our PR #54728 was closed). The server opt-out still lives in
+# cmd_dashboard (hermes_cli/main.py, HERMES_DASHBOARD_NO_MCP=1), which the live
+# hermes-dashboard.service sets — so the protection is unchanged.
 
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
@@ -250,16 +238,10 @@ async def handle_ws(ws: Any) -> None:
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
 
-        # The desktop app and dashboard chat reach the agent through this WS
-        # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that
-        # spawns the background MCP discovery thread). Without starting it here,
-        # discovery never runs in this process: _make_agent only *waits* on the
-        # thread (wait_for_mcp_discovery), which no-ops when it was never
-        # created, so the agent snapshots an MCP-less tool list and the only way
-        # to surface MCP tools is a manual /reload-mcp. Start it once per
-        # process here (idempotent, config-gated) before gateway.ready so the
-        # first agent build can pick up already-spawning servers. (#38945)
-        _maybe_start_ws_mcp_discovery()
+        # MCP discovery is intentionally NOT started here — upstream moved
+        # discovery ownership to the profile-scoped agent build path (see
+        # test_ws_does_not_own_mcp_discovery_startup). Retired our WS-path
+        # starter 2026-07-24; server opt-out remains in cmd_dashboard.
 
         ready_ok = await transport.write_async(
             {
