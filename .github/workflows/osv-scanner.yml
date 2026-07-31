@@ -52,6 +52,23 @@ jobs:
       # fixed artifact name, which the wrapper downloads below.
       results-file-name: osv-results.sarif
       fail-on-vuln: false
+      # Only upload SARIF where Code Scanning actually exists. It requires
+      # GitHub Advanced Security, which private repos don't have, so on the
+      # private mirror the reusable workflow's "Upload to code-scanning" step
+      # dies with "Code scanning is not enabled for this repository" — failing
+      # the whole job even though the scan itself succeeded and found nothing.
+      # That cascaded into `CI review comment (live)` and the `All required
+      # checks pass` aggregate, blocking every PR (e.g. #3, 2026-07-21) with a
+      # red check that no rerun could clear.
+      #
+      # Vulnerability reporting does NOT depend on this upload: the
+      # emit-status job below downloads the SARIF artifact and summarises the
+      # count into the unified PR comment. Disabling the upload costs only the
+      # Security tab integration, and only where it was never available.
+      #
+      # Defaults to false if the repository object is absent from the event
+      # payload — fail toward "don't upload" rather than toward a red CI.
+      upload-sarif: ${{ github.event.repository.private == false }}
 
   emit-status:
     name: Emit review status
