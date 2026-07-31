@@ -1996,14 +1996,15 @@ def _apply_journal_policy(
     requested = (os.getenv("HERMES_KANBAN_JOURNAL") or "").strip().lower()
     if not requested:
         try:
-            import yaml
+            # Route through the canonical loader (managed-scope overlay + ${ENV}
+            # expansion) rather than a raw yaml.safe_load — enforced by
+            # tests/hermes_cli/test_config_read_guard.py (upstream guard).
+            from hermes_cli.config import load_config_readonly
 
-            cfg_path = kanban_home() / "config.yaml"
-            if cfg_path.exists():
-                cfg = yaml.safe_load(cfg_path.read_text()) or {}
-                kanban_cfg = cfg.get("kanban") if isinstance(cfg, dict) else None
-                if isinstance(kanban_cfg, dict):
-                    requested = str(kanban_cfg.get("journal_mode") or "").strip().lower()
+            cfg = load_config_readonly() or {}
+            kanban_cfg = cfg.get("kanban") if isinstance(cfg, dict) else None
+            if isinstance(kanban_cfg, dict):
+                requested = str(kanban_cfg.get("journal_mode") or "").strip().lower()
         except Exception:
             requested = ""
     force_delete = requested in {"delete", "rollback"}
