@@ -592,8 +592,8 @@ class TestCheckFnWarnOnce:
         import time as _time
         from tools import registry as reg_mod
         with reg_mod._check_fn_cache_lock:
-            ts, value = reg_mod._check_fn_cache[fn]
-            reg_mod._check_fn_cache[fn] = (
+            ts, value = reg_mod._check_fn_cache[(fn, None)]
+            reg_mod._check_fn_cache[(fn, None)] = (
                 ts - reg_mod._CHECK_FN_TTL_SECONDS - 1, value
             )
 
@@ -635,7 +635,7 @@ class TestCheckFnWarnOnce:
             # Grace period after the True would flake-suppress; clear last_good
             # to model a distinct outage rather than a flake.
             with reg_mod._check_fn_cache_lock:
-                reg_mod._check_fn_last_good.pop(flapping, None)
+                reg_mod._check_fn_last_good.pop((flapping, None), None)
             assert reg_mod._check_fn_cached(flapping) is False
 
         records = [
@@ -650,6 +650,6 @@ class TestCheckFnWarnOnce:
         reg_mod.invalidate_check_fn_cache()
         failing = lambda: False  # noqa: E731
         assert reg_mod._check_fn_cached(failing) is False
-        assert failing in reg_mod._check_fn_warned
+        assert (failing, None) in reg_mod._check_fn_warned
         reg_mod.invalidate_check_fn_cache()
-        assert failing not in reg_mod._check_fn_warned
+        assert (failing, None) not in reg_mod._check_fn_warned
