@@ -27,6 +27,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import os
 import socket
 import threading
 from typing import Any
@@ -35,29 +36,19 @@ from tui_gateway import server
 
 _log = logging.getLogger(__name__)
 
+# NO_MCP carry note: the WS sidecar used to start MCP discovery here (gated by
+# HERMES_DASHBOARD_NO_MCP). Retired 2026-07-24 — upstream refactored discovery
+# ownership away from the WS transport (test_ws_does_not_own_mcp_discovery_startup
+# enforces it; our PR #54728 was closed). The server opt-out still lives in
+# cmd_dashboard (hermes_cli/main.py, HERMES_DASHBOARD_NO_MCP=1), which the live
+# hermes-dashboard.service sets — so the protection is unchanged.
+
+
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
 # threads from a wedged socket.
 _WS_WRITE_TIMEOUT_S = 10.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
-
-# Per-token streaming frames are coalesced: buffered and flushed as a batch on
-# a short timer instead of waking the event loop once per token. A model reply
-# emits hundreds of these in a burst, and each one is a loop wakeup competing
-# with the agent turn for the GIL — coalescing cuts that churn (CF-2). The task
-# that introduced this called them "agent.token"/"agent.thinking"; in this
-# codebase the per-token frames are the ``*.delta`` stream events below. Keep
-# this set to genuinely high-frequency, display-only events — anything a client
-# must see promptly (tool/approval/status/completion frames) is non-streaming
-# and flushes the buffer ahead of itself, so ordering is preserved.
-_STREAMING_EVENT_TYPES = frozenset({
-    "message.delta",
-    "reasoning.delta",
-    "thinking.delta",
-})
-# Max time a streamed token waits in the buffer before flush (~30 fps). Short
-# enough to stay imperceptible to the live token cadence.
-_TOKEN_COALESCE_S = 0.033
 
 # Keep starlette optional at import time; handle_ws uses the real class when
 # it's available and falls back to a generic Exception sentinel otherwise.
@@ -126,43 +117,17 @@ class WSTransport:
         except RuntimeError:
             on_loop = False
 
-        # Coalesce streamed token frames: buffer this frame and arm a short
-        # flush timer instead of waking the loop right now. Cheap and
-        # non-blocking — the worker returns immediately. Ordering is preserved
-        # because every non-streaming frame (below) drains the buffer ahead of
-        # itself.
-        if self._is_streaming_frame(obj):
-            with self._token_lock:
-                self._pending_tokens.append(line)
-                if not self._token_flush_armed:
-                    self._token_flush_armed = True
-                    # call_soon_threadsafe arms the call_later timer on the loop
-                    # thread and is safe to call from a worker or the loop.
-                    self._loop.call_soon_threadsafe(self._arm_token_flush)
-            return not self._closed
+        if on_loop:
+            # Fire-and-forget — don't block the loop waiting on itself.
+            self._loop.create_task(self._safe_send_many([line]))
+            return True
 
-        # Non-streaming frame (RPC response, control frame, non-token event):
-        # append it behind any buffered tokens and flush the whole batch NOW so
-        # it can never overtake the tokens that preceded it. The send is
-        # scheduled INSIDE the lock so the on-the-wire order matches the buffer
-        # order even if the coalesce timer fires on the loop at the same moment.
-        from agent.async_utils import safe_schedule_threadsafe
-        with self._token_lock:
-            self._pending_tokens.append(line)
-            batch = self._pending_tokens
-            self._pending_tokens = []
-            if on_loop:
-                # Fire-and-forget — don't block the loop waiting on itself.
-                self._loop.create_task(self._safe_send_many(batch))
-                return True
-            fut = safe_schedule_threadsafe(
-                self._safe_send_many(batch), self._loop
-            )
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+            fut = safe_schedule_threadsafe(self._safe_send_many([line]), self._loop)
             if fut is None:
                 self._closed = True
                 return False
-
-        try:
             fut.result(timeout=_WS_WRITE_TIMEOUT_S)
             return not self._closed
         except concurrent.futures.TimeoutError:  # builtin TimeoutError on 3.11+
@@ -171,8 +136,8 @@ class WSTransport:
             # already scheduled and will flush once the loop breathes — latching
             # _closed here permanently silenced live windows after one slow
             # write (the "subagent window shows zero streaming" bug). Unblock
-            # the worker thread and keep the transport alive; _safe_send_many
-            # latches on a real socket error when the frame actually fails.
+            # the worker thread and keep the transport alive; _safe_send_many latches
+            # on a real socket error when the frame actually fails.
             _log.warning(
                 "ws write slow (loop stalled >%ss) peer=%s — frame left in flight",
                 _WS_WRITE_TIMEOUT_S, self._peer,
@@ -185,30 +150,6 @@ class WSTransport:
                 self._peer, type(exc).__name__, exc,
             )
             return False
-
-    def _arm_token_flush(self) -> None:
-        """Arm the coalesce timer. Runs on the loop thread (call_soon_threadsafe)."""
-        if self._closed:
-            return
-        self._token_flush_handle = self._loop.call_later(
-            _TOKEN_COALESCE_S, self._flush_tokens
-        )
-
-    def _flush_tokens(self) -> None:
-        """Send buffered tokens as one batch. Runs on the loop thread (timer).
-
-        The send is scheduled under the lock so its wire order is fixed relative
-        to a concurrent non-streaming flush in :meth:`write`.
-        """
-        with self._token_lock:
-            self._token_flush_handle = None
-            self._token_flush_armed = False
-            if not self._pending_tokens or self._closed:
-                self._pending_tokens = []
-                return
-            batch = self._pending_tokens
-            self._pending_tokens = []
-            self._loop.create_task(self._safe_send_many(batch))
 
     async def write_async(self, obj: dict) -> bool:
         """Send from the owning event loop. Awaits until the frame is on the wire."""
@@ -247,12 +188,6 @@ class WSTransport:
 
     def close(self) -> None:
         self._closed = True
-        # Cancel any pending coalesce flush. close() runs on the loop thread
-        # (the handle_ws finally), so touching the TimerHandle here is safe.
-        handle = self._token_flush_handle
-        if handle is not None:
-            handle.cancel()
-            self._token_flush_handle = None
 
 
 def _ws_peer_label(ws: Any) -> str:
@@ -302,6 +237,11 @@ async def handle_ws(ws: Any) -> None:
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+
+        # MCP discovery is intentionally NOT started here — upstream moved
+        # discovery ownership to the profile-scoped agent build path (see
+        # test_ws_does_not_own_mcp_discovery_startup). Retired our WS-path
+        # starter 2026-07-24; server opt-out remains in cmd_dashboard.
 
         ready_ok = await transport.write_async(
             {

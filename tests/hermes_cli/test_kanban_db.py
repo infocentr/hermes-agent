@@ -864,6 +864,62 @@ class TestSharedBoardPaths:
 
 
 
+
+# ---------------------------------------------------------------------------
+# Journal policy override
+# ---------------------------------------------------------------------------
+
+def test_connect_honors_explicit_delete_journal_policy(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_JOURNAL", "delete")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    conn = kb.connect()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    finally:
+        conn.close()
+
+
+def test_cached_connect_honors_explicit_delete_journal_policy(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_JOURNAL", "delete")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    first = kb.connect()
+    path = Path(first.execute("PRAGMA database_list").fetchone()[2]).resolve()
+    first.close()
+    assert str(path) in kb._INITIALIZED_PATHS
+
+    second = kb.connect()
+    try:
+        assert second.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    finally:
+        second.close()
+
+
+def test_connect_honors_config_delete_journal_policy(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("kanban:\n  journal_mode: delete\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_JOURNAL", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    conn = kb.connect()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
 # ---------------------------------------------------------------------------
@@ -891,6 +947,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_JOURNAL", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     # These tests exercise the WAL-attempt path; assume a fixed SQLite so the

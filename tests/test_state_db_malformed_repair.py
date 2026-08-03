@@ -299,6 +299,19 @@ def test_fts_write_corruption_repaired_in_place(tmp_path):
 
 
 
+def test_select_cached_agent_history_ignores_nonreplayable_empty_rows():
+    """A persisted empty restore row must not masquerade as FTS lag."""
+    from gateway.run import _select_cached_agent_history
+
+    persisted = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+    ]
+    live = persisted + [{"role": "user", "content": ""}]
+
+    assert _select_cached_agent_history(persisted, live) is persisted
+
+
 def _corrupt_btree_index(db_path: Path, index_name: str) -> None:
     """Make a real B-tree index stale so integrity_check reports
     'wrong # of entries in index <name>'.

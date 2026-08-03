@@ -1,0 +1,4 @@
+infocentr
+# Local git identity on the Hermes VPS (`Laura <laura@localhost>`), which
+# authors the fork's local-delta commits. Same convention as the other
+# machine-local identities here (agent@agents-Mac-mini.local, pi@hermes.local).

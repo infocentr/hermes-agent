@@ -17511,6 +17511,15 @@ def start_server(
         # reaped via the WebSocketDisconnect → disconnect/reap path.
         ws_ping_interval=None if _is_loopback else 20.0,
         ws_ping_timeout=None if _is_loopback else 20.0,
+        # Bound graceful shutdown. On SIGINT (systemd restart) uvicorn's
+        # shutdown() waits for open connections to finish, but the long-lived
+        # /api/console WebSocket never closes on its own, so the wait is
+        # unbounded (default timeout_graceful_shutdown=None) and the process
+        # hangs until systemd's TimeoutStopSec (45s) fires SIGKILL — the daily
+        # 04:31 dashboard kill. Cap the wait so uvicorn force-cancels the
+        # lingering ws task and exits cleanly well under that window.
+        # See memory project_dashboard_sigkill_rootcause.
+        timeout_graceful_shutdown=10,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)

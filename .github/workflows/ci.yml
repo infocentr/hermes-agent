@@ -35,9 +35,15 @@ jobs:
   # detect: run the classifier once. Every downstream job reads its outputs
   # to decide whether to run. On push/dispatch the classifier fails open
   # (all lanes true) so post-merge validation is never weakened.
+  #
+  # Private mirror pushes deliberately do not start GitHub-hosted runners.
+  # They are backup/ops syncs, not release validation, and private Actions
+  # minutes are billable once the free quota/spending limit is exhausted.
+  # Public upstream pushes and all PRs still run normal CI.
   # ─────────────────────────────────────────────────────────────────────
   detect:
     name: Detect affected areas
+    if: github.event_name != 'push' || github.repository != 'infocentr/hermes-agent-private'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -54,7 +60,7 @@ jobs:
       ci_review_files: ${{ steps.classify.outputs.ci_review_files }}
       event_name: ${{ github.event_name }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
@@ -179,6 +185,7 @@ jobs:
 
   osv-scanner:
     name: OSV scan
+    if: github.event_name != 'push' || github.repository != 'infocentr/hermes-agent-private'
     uses: ./.github/workflows/osv-scanner.yml
 
   # ─────────────────────────────────────────────────────────────────────
@@ -200,7 +207,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -288,7 +295,7 @@ jobs:
       # comment-live is a polling job — it doesn't block the gate.
       # we don't require docker to pass rn because it's so slow lol
       # - docker
-    if: always()
+    if: always() && (github.event_name != 'push' || github.repository != 'infocentr/hermes-agent-private')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -335,7 +342,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'

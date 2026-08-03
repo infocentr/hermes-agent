@@ -222,6 +222,12 @@ _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
 _check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
+# check_fns whose unavailability has already been logged at WARNING. A
+# persistently-absent backend (no browser CDP, kanban mode off, ...) would
+# otherwise emit the same WARNING every TTL expiry on every turn, drowning
+# real errors; repeats go to DEBUG until the check recovers or the cache is
+# invalidated. Keyed by cache_key to match _check_fn_last_good/_check_fn_cache.
+_check_fn_warned: set = set()
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 
@@ -311,6 +317,8 @@ def _check_fn_cached(fn: Callable) -> bool:
         if value:
             _check_fn_last_good[cache_key] = now
             _check_fn_cache[cache_key] = (now, True)
+            # Recovered — re-arm the WARNING for the next distinct outage.
+            _check_fn_warned.discard(cache_key)
             return True
 
         last_good = _check_fn_last_good.get(cache_key)
@@ -327,9 +335,13 @@ def _check_fn_cached(fn: Callable) -> bool:
             )
             return True
 
-        # No recent success (or grace expired) — honor the failure. Log it so
-        # silent tool loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
+        # No recent success (or grace expired) — honor the failure. Log the
+        # first occurrence at WARNING so silent tool loss in quiet mode
+        # (subagents) is diagnosable; repeats of the same ongoing outage at
+        # DEBUG so a permanently-absent backend can't flood the error log.
+        log = logger.debug if cache_key in _check_fn_warned else logger.warning
+        _check_fn_warned.add(cache_key)
+        log(
             "check_fn %s %s; dependent tools will be unavailable this turn",
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",
@@ -344,6 +356,7 @@ def invalidate_check_fn_cache() -> None:
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+        _check_fn_warned.clear()
 
 
 def get_cached_check_fn_result(fn: Callable) -> Optional[bool]:

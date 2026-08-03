@@ -116,7 +116,15 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             "Full details saved in cron output."
         )
 
-    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+    # Provider timeout wording. "timed out" and httpx ``ReadTimeout`` are
+    # unambiguous. Standalone ``timeout`` is only treated as a provider timeout
+    # when it is not the first half of a compound token such as
+    # ``timeout-SIGKILL`` (which appears in system-improvement reports).
+    if (
+        "readtimeout" in lower
+        or "timed out" in lower
+        or re.search(r"\btimeout\b(?!-)", lower)
+    ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
             "Fallback chain was exhausted or unavailable. "
@@ -317,6 +325,76 @@ def _is_cron_silence_response(text: str) -> bool:
     from gateway.response_filters import is_autonomous_silence_response
 
     return is_autonomous_silence_response(text)
+
+
+_INCOMPLETE_AGENT_RESPONSE_PATTERNS = (
+    "[validation pending]",
+    "validation pending",
+    "validate the patch",
+    "validate the change",
+    "then log or revert",
+    "log or revert based on the delta",
+    "clean up the backup if kept",
+)
+
+
+# Report-start markers for autonomous agents whose backing model may prepend its
+# raw chain-of-thought as plain content. Reasoning models (e.g. kimi-k2.7-code)
+# that don't route "thinking" to a separate channel will happily emit dozens of
+# lines of scratch-work ("Let's count: journal(7)+... Good.") and then the actual
+# report — all in the content channel — no matter how forcefully the prompt
+# forbids preamble. When a delivered response contains one of these markers,
+# everything before the LAST occurrence is model scratch-work: we strip it from
+# the *delivered* message only. The full raw output is still saved verbatim by
+# save_job_output() for audit, so nothing is lost. A response WITHOUT any marker
+# is returned unchanged, so this is a strict no-op for every other cron job.
+# (system-improvement-agent 5800656c2297 leaked ~40 lines before its report.)
+_AGENT_REPORT_MARKERS = (
+    "🔧 **System Improvement Agent**",
+    "🔧 System Improvement Agent",
+)
+
+
+def _strip_reasoning_preamble(text: str) -> str:
+    """Drop a reasoning-model's leaked scratch-work before a known report marker.
+
+    Anchors on the raw marker substring (the real report's marker is the LAST
+    occurrence — any earlier one is the model quoting the template to itself),
+    keeps everything from there on, and left-trims. Returns ``text`` unchanged
+    when no marker is present or the marker is already at the very start, so it
+    cannot alter clean reports or any job that never emits these markers.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    best = -1
+    for marker in _AGENT_REPORT_MARKERS:
+        idx = text.rfind(marker)
+        if idx > best:
+            best = idx
+    if best <= 0:
+        # -1 == marker absent; 0 == report already starts the message. Neither
+        # has preamble to strip.
+        return text
+    return text[best:].lstrip()
+
+
+def _cron_final_response_incomplete(final_response: str) -> str | None:
+    """Return a reason when a cron agent reports unfinished guardrail work.
+
+    Some autonomous jobs can produce a polished final report while admitting
+    that validation, logging, revert, or cleanup is still pending. That is not a
+    successful unattended run: cron must not mark it ``ok`` just because the LLM
+    returned text. Keep this generic and conservative — it only catches explicit
+    unfinished-work language that should never appear in a final report.
+    """
+    text = (final_response or "").strip()
+    if not text:
+        return None
+    lower = text.lower()
+    for pattern in _INCOMPLETE_AGENT_RESPONSE_PATTERNS:
+        if pattern in lower:
+            return f"agent final response contains unfinished-work marker: {pattern}"
+    return None
 
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
@@ -3274,6 +3352,18 @@ def run_job(
 
         # Max iterations
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 500
+        # Per-job override lets long-running agents (e.g. system-improvement-agent)
+        # use a larger budget without changing global defaults.
+        job_max_turns = job.get("max_turns") or job.get("max_iterations")
+        if job_max_turns:
+            try:
+                job_max_turns = int(job_max_turns)
+                if job_max_turns > 0:
+                    max_iterations = job_max_turns
+                    logger.info("Job '%s': using per-job max_turns=%d", job_id, max_iterations)
+            except (ValueError, TypeError):
+                logger.warning("Job '%s': invalid max_turns/max_iterations '%s', ignoring", job_id, job_max_turns)
+        max_iterations = int(max_iterations)
 
         # Provider routing
         pr = _cfg.get("provider_routing") or {}
@@ -4001,6 +4091,12 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # If the agent responded with [SILENT], skip delivery (but
             # output is already saved above).  Failed jobs always deliver.
             deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # Strip any leaked reasoning-model scratch-work that precedes the
+            # agent's report marker (no-op when no marker is present, so it only
+            # affects jobs that emit one). Delivery-only: the full raw output was
+            # already saved verbatim above. See _strip_reasoning_preamble.
+            if success:
+                deliver_content = _strip_reasoning_preamble(deliver_content)
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
@@ -4039,6 +4135,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         if success and not final_response.strip():
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        # A response that says validation/logging/revert/cleanup is still
+        # pending is not a completed unattended job. Mark it failed so the
+        # operator sees the issue and the job does not get a false green tick.
+        if success:
+            incomplete_reason = _cron_final_response_incomplete(final_response)
+            if incomplete_reason:
+                success = False
+                error = incomplete_reason
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)

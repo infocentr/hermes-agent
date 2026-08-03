@@ -2495,17 +2495,37 @@ def terminal_tool(
         session_key = get_current_session_key(default="") or (task_id or "")
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
-        # restart|stop targeting hermes-gateway) must never run inside the
-        # gateway process itself. The restart would SIGTERM the gateway, which
-        # kills this very subprocess before it can complete — the service may
-        # never restart. This mirrors the `hermes gateway restart` guard in
+        # restart|stop targeting hermes-gateway, or a raw `kill` of the
+        # gateway's own PID) must never run inside the gateway process
+        # itself. The restart would SIGTERM the gateway, which kills this
+        # very subprocess before it can complete — the service may never
+        # restart. This mirrors the `hermes gateway restart` guard in
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
-        # but applies unconditionally (force=True cannot help here).
+        # but applies unconditionally (force=True cannot help here). The
+        # PID check runs first: it is exact (literal current PID), while the
+        # word-pattern check is heuristic.
         if os.environ.get("_HERMES_GATEWAY") == "1":
             from cron.lifecycle_guard import (
+                command_kills_pid,
                 contains_gateway_lifecycle_command_or_referenced_script,
                 contains_launchctl_submit_command,
             )
+            # Carry: raw-PID kill of the gateway's own process is exact and runs
+            # first, before upstream's word-pattern / launchctl / script checks.
+            if command_kills_pid(command, os.getpid()):
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": (
+                        "Blocked: this command signals the gateway's own process "
+                        f"(PID {os.getpid()}) from inside the gateway. The kill "
+                        "would terminate this command mid-flight and register as "
+                        "an unplanned failure with the service supervisor. Run "
+                        "`hermes gateway restart` from a separate shell outside "
+                        "the running gateway."
+                    ),
+                    "status": "error",
+                }, ensure_ascii=False)
             if contains_launchctl_submit_command(command):
                 return json.dumps({
                     "output": "",

@@ -1390,6 +1390,15 @@ def run_conversation(
     # all run inside Codex). Default Hermes path is bypassed entirely.
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
+    # Turn finalization lives in agent/turn_finalizer. It is imported lazily
+    # (module-level would be circular: turn_finalizer imports back from this
+    # module) but it MUST be bound here, at the top of the body, rather than at
+    # the post-loop return site: the lazy import makes ``finalize_turn`` a
+    # function-local for the whole function, so the early-return paths below --
+    # notably the code-skew guard -- raised UnboundLocalError instead of
+    # returning their message. See tests/test_agent_code_skew.py.
+    from agent.turn_finalizer import finalize_turn
+
     if agent.api_mode == "codex_app_server":
         return agent._run_codex_app_server_turn(
             user_message=user_message,
@@ -7225,8 +7234,8 @@ def run_conversation(
     
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
-    # result dict is returned exactly as before.
-    from agent.turn_finalizer import finalize_turn
+    # result dict is returned exactly as before. ``finalize_turn`` is imported
+    # once at the top of this function -- see the note there.
     return finalize_turn(
         agent,
         final_response=final_response,
