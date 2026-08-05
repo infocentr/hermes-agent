@@ -59,8 +59,6 @@ def _bare_adapter():
     a._fatal_error_retryable = True
     a._polling_network_error_count = 0
     a._polling_conflict_count = 0
-    # __init__ (bypassed by __new__) sets this at adapter.py:773; _record_polling_progress
-    # reads it, so the bare-adapter fixture must set it too. (Upstream fixture gap.)
     a._polling_conflict_recovery_generation = None
     a._polling_error_callback_ref = None
     a._background_tasks = set()
