@@ -147,7 +147,19 @@ def expensive_model_warning(
             output_cost = entry.output_cost_per_million
             source = entry.source
 
-    is_known_gpt55_pro_confusion = model.lower() == GPT55_PRO_OPENROUTER_ID
+    # The gpt-5.5-pro / gpt-5.5 identity confusion only warrants a warning when
+    # the provider's billing route is one we actually recognize. For a
+    # custom/unknown provider we cannot assert that "openai/gpt-5.5-pro" is the
+    # pricey OpenRouter SKU (it may be an unrelated alias on a private router),
+    # and the foreign-pricing skip contract requires staying silent there.
+    # Local carry: upstream 83d373aae6 added this special case but left the
+    # custom/unknown-provider skip tests (54cc39aa15) unadjusted, so bare-main
+    # fails test_skips_foreign_models_dev_pricing_for_custom_or_unknown_providers
+    # and test_skips_untrusted_provider_pricing_lookup_for_custom_provider.
+    is_known_gpt55_pro_confusion = (
+        model.lower() == GPT55_PRO_OPENROUTER_ID
+        and _can_trust_pricing_lookup(model, provider=provider, base_url=base_url)
+    )
 
     over_input = (
         input_cost is not None and input_cost > INPUT_COST_WARNING_THRESHOLD
