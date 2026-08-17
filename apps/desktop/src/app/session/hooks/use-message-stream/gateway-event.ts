@@ -1,5 +1,5 @@
 import type { BillingBlock } from '@hermes/shared'
-import { backendScopeKey } from '@hermes/shared'
+import { registryBackendScopeKey } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -77,7 +77,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
-import { dropSessionState } from '@/store/session-states'
+import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
@@ -340,13 +340,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // registered connection exposes a 'default' profile, so a bare profile
       // comparison attributes gateway B's 'default' events to gateway A's
       // 'default'. Compare the composite (connectionId, profile) scope with
-      // backendScopeKey — untagged (local/primary) events keep the legacy
+      // registryBackendScopeKey — untagged primary events keep the legacy
       // bare-profile behavior byte-identical.
       const fromActiveSource = (): boolean =>
-        (!event.profile ||
-          normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())) &&
-        backendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
-          backendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
+        (!event.profile || normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())) &&
+        registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
+          registryBackendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
 
       const occurredAt =
         typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
@@ -474,6 +473,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (reclaimedRuntimeId) {
           dropSessionState(reclaimedRuntimeId)
+          // A tile bound to the reclaimed runtime would otherwise render an
+          // empty transcript forever: its view reads $sessionStates[runtime]
+          // (just dropped) and its resume effect is gated on !runtimeId, so a
+          // bound tile never re-resumes (#82620). Unbind it so the effect
+          // refires against the intact stored session — and purge the wiring
+          // cache's entry, or resumeTile's warm path would hand the dead
+          // runtime straight back instead of cold-resuming a live one.
+          unbindTileRuntime(reclaimedRuntimeId)
+          sessionStateByRuntimeIdRef.current.delete(reclaimedRuntimeId)
         }
 
         // The row's ended_at moved, so refresh the lists that render it.
@@ -508,12 +516,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // gateway may reconcile the foreground cache. Requiring the renderer's
         // source tag prevents an event queued before a profile swap from being
         // attributed to the newly active profile.
-        if (
-          isActiveEvent &&
-          typeof payload?.approval_mode === 'string' &&
-          event.profile &&
-          fromActiveSource()
-        ) {
+        if (isActiveEvent && typeof payload?.approval_mode === 'string' && event.profile && fromActiveSource()) {
           reconcileApprovalModeForProfile(event.profile, payload.approval_mode)
         }
 
