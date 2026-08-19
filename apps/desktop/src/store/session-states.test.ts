@@ -11,6 +11,7 @@ import {
   blankDraftTile,
   focusedSessionNeedsRoute,
   markSelectionRestore,
+  nextSessionTileForWorkspace,
   orderTilesByTree,
   releaseSessionTranscript,
   resetTileRuntimeBindings,
@@ -38,7 +39,9 @@ describe('resetTileRuntimeBindings', () => {
     resetTileRuntimeBindings()
 
     expect(invalidateRuntimeBindings).toHaveBeenCalledTimes(1)
-    expect($sessionTiles.get()).toEqual([{ anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }])
+    expect($sessionTiles.get()).toEqual([
+      { anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }
+    ])
   })
 
   it('tolerates a delegate without invalidateRuntimeBindings (older wiring)', () => {
@@ -106,6 +109,47 @@ describe('selectionHomesToWorkspace', () => {
 
   it('skips homing when the selected id is already an open tile', () => {
     expect(selectionHomesToWorkspace('a', tiles)).toBe(false)
+  })
+})
+
+describe('nextSessionTileForWorkspace (⌘W promotion source)', () => {
+  afterEach(() => {
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('prefers a tile stacked WITH the workspace tab (nearest-out)', () => {
+    $layoutTree.set(group(['workspace', tilePane('a'), tilePane('b')], { active: 'workspace', id: 'main' }))
+    $sessionTiles.set([tile('a'), tile('b')])
+
+    expect(nextSessionTileForWorkspace()).toBe('a')
+  })
+
+  it('side-by-side layout: a tile in ANOTHER zone still promotes instead of dropping main to a fresh draft (#88924)', () => {
+    // main zone holds only the workspace; the session tile lives in its own
+    // zone beside it — db's three-pane report shape.
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { active: 'workspace', id: 'main' }),
+        group([tilePane('side')], { active: tilePane('side'), id: 'right' })
+      ])
+    )
+    $sessionTiles.set([tile('side')])
+
+    expect(nextSessionTileForWorkspace()).toBe('side')
+  })
+
+  it('returns null when no live tile exists anywhere in the tree', () => {
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { active: 'workspace', id: 'main' }),
+        group([tilePane('stale')], { active: tilePane('stale'), id: 'right' })
+      ])
+    )
+    // Pane persisted in the tree but its tile is gone — must not promote a ghost.
+    $sessionTiles.set([])
+
+    expect(nextSessionTileForWorkspace()).toBe(null)
   })
 })
 
