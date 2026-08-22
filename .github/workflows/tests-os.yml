@@ -48,7 +48,12 @@ jobs:
             runner: macos-latest
             marker: macos_only
           - name: Windows-only tests
-            runner: windows-latest-32-core
+            # Local carry: our fork has no larger runners (personal account),
+            # so windows-latest-32-core hangs "waiting for a runner" and holds
+            # the whole CI run open. The windows_only marker is a small subset —
+            # the free standard windows-latest handles it fine (it did before
+            # upstream bumped to 32-core). Re-apply on retunes. See tests.yml.
+            runner: windows-latest
             marker: windows_only
     steps:
       - name: Checkout code
