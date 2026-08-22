@@ -24,9 +24,9 @@ jobs:
     # Local carry: our fork is a personal account without GitHub larger
     # runners, so ubuntu-latest-96-core hangs "waiting for a runner". Run on
     # the free public 4-core standard runner instead; the unsliced full suite
-    # needs a longer wall budget there, hence timeout 60 (upstream: 30 on 96c).
+    # needs a longer wall budget there, hence timeout 75 (upstream: 30 on 96c).
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,7 +123,15 @@ jobs:
           # across a 6x range. The suite has sufficient concurrency at this
           # size. The remaining time is the slowest files plus the setup.
           # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
+          #
+          # Local carry: upstream runs on 96-core, so 96 = one-per-core. Our
+          # fork downgrades to the 4-core ubuntu-latest runner (no larger
+          # runners on a personal account), where 96 workers is 24x
+          # oversubscription — it thrashed, starved the 2s-timeout / ReDoS /
+          # cleanup timing tests, and timed out collection on ~18 files
+          # (verified 2026-08-22). Match workers to our core count per the same
+          # one-per-core rule. Re-apply on upstream retunes of this value.
+          HERMES_TEST_WORKERS: 4
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
