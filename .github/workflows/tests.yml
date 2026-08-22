@@ -21,8 +21,12 @@ jobs:
     # 96 cores clear the floor that the slowest single test file sets (about
     # 82s). A second slice divides work that is already at that floor, and
     # adds a second setup.
-    runs-on: ubuntu-latest-96-core
-    timeout-minutes: 30
+    # Local carry: our fork is a personal account without GitHub larger
+    # runners, so ubuntu-latest-96-core hangs "waiting for a runner". Run on
+    # the free public 4-core standard runner instead; the unsliced full suite
+    # needs a longer wall budget there, hence timeout 60 (upstream: 30 on 96c).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
