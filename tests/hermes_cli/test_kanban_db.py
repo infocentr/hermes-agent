@@ -890,7 +890,7 @@ def test_connect_honors_explicit_delete_journal_policy(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb._INITIALIZED_PATHS.clear()
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
     finally:
@@ -905,12 +905,12 @@ def test_cached_connect_honors_explicit_delete_journal_policy(tmp_path, monkeypa
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb._INITIALIZED_PATHS.clear()
 
-    first = kb.connect()
+    first = kbc.connect()
     path = Path(first.execute("PRAGMA database_list").fetchone()[2]).resolve()
     first.close()
     assert str(path) in kb._INITIALIZED_PATHS
 
-    second = kb.connect()
+    second = kbc.connect()
     try:
         assert second.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
     finally:
@@ -926,7 +926,7 @@ def test_connect_honors_config_delete_journal_policy(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb._INITIALIZED_PATHS.clear()
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
     finally:

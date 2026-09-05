@@ -210,6 +210,10 @@ _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
 _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 _check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
+# Local carry (#56836): keys whose check_fn failure has already been logged at
+# WARNING this outage. Repeats log at DEBUG so a permanently-absent backend can't
+# flood the error log; a success discards the key, re-arming the warning.
+_check_fn_warned: Set[tuple[Callable, Optional[str]]] = set()
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: Set[Callable] = set()
@@ -320,6 +324,7 @@ def _check_fn_cached(fn: Callable) -> bool:
         if value:
             _check_fn_last_good[cache_key] = now
             _check_fn_cache[cache_key] = (now, True)
+            _check_fn_warned.discard(cache_key)  # carry #56836: recovery re-arms the warning
             return True
         last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
@@ -331,8 +336,12 @@ def _check_fn_cached(fn: Callable) -> bool:
             return True
 
         # No recent success (or grace expired) — honor the failure; logged so silent tool
-        # loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
+        # loss in quiet mode (subagents) is diagnosable. Local carry (#56836): first
+        # occurrence at WARNING, repeats at DEBUG so a permanently-absent backend
+        # can't flood the error log.
+        log = logger.debug if cache_key in _check_fn_warned else logger.warning
+        _check_fn_warned.add(cache_key)
+        log(
             "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome)
         _check_fn_cache[cache_key] = (now, False)
         return False
@@ -350,6 +359,7 @@ def invalidate_check_fn_cache() -> None:
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+        _check_fn_warned.clear()  # carry #56836
 
 
 def get_cached_check_fn_result(fn: Callable) -> Optional[bool]:

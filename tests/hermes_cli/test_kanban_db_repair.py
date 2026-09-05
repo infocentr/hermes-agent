@@ -253,7 +253,7 @@ def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_JOURNAL", "wal")
     monkeypatch.setattr(kb, "_LAST_WAL_CHECKPOINT", {})
 
-    conn = kb.connect(db_path=db_path)
+    conn = kbc.connect(db_path=db_path)
     try:
         # Generate WAL frames.
         for i in range(30):
@@ -261,7 +261,7 @@ def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
         wal = tmp_path / "kanban.db-wal"
         assert wal.exists() and wal.stat().st_size > 0
 
-        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: None, dry_run=True)
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None, dry_run=True)
         assert wal.stat().st_size == 0, (
             "wal_checkpoint(TRUNCATE) should reset the -wal file to 0 bytes"
         )
