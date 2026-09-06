@@ -241,8 +241,15 @@ def test_dispatch_tick_runs_wal_checkpoint_at_interval(tmp_path, monkeypatch):
 
 
 @pytest.mark.requires_wal
-def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
-    """End-to-end: the checkpoint actually truncates the -wal sidecar."""
+def test_dispatch_tick_checkpoints_wal(tmp_path, monkeypatch):
+    """End-to-end: a dispatcher tick fires the periodic PASSIVE WAL checkpoint
+    and flushes committed frames back into the main DB.
+
+    _maybe_checkpoint_wal runs ``wal_checkpoint(PASSIVE)`` (hygiene under the
+    dispatch lock), which applies WAL frames to the DB but does NOT truncate the
+    -wal sidecar to 0 — only TRUNCATE would. So assert what PASSIVE guarantees:
+    the checkpoint actually ran for this DB and left nothing pending, not a
+    zeroed file."""
     db_path = tmp_path / "kanban.db"
     _build_board_db(db_path, tasks=1)
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
@@ -251,7 +258,7 @@ def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
     # WAL-specific, so opt into WAL explicitly — otherwise connect() produces no
     # -wal sidecar and the checkpoint assertion below is vacuous.
     monkeypatch.setenv("HERMES_KANBAN_JOURNAL", "wal")
-    monkeypatch.setattr(kb, "_LAST_WAL_CHECKPOINT", {})
+    monkeypatch.setattr(kbc, "_LAST_WAL_CHECKPOINT", {})
 
     conn = kbc.connect(db_path=db_path)
     try:
@@ -262,9 +269,13 @@ def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
         assert wal.exists() and wal.stat().st_size > 0
 
         kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: None, dry_run=True)
-        assert wal.stat().st_size == 0, (
-            "wal_checkpoint(TRUNCATE) should reset the -wal file to 0 bytes"
-        )
+        # The tick claimed the checkpoint throttle slot for this DB (it fired).
+        assert str(db_path.resolve()) in kbc._LAST_WAL_CHECKPOINT
+        # PASSIVE flushed everything: a follow-up checkpoint finds nothing busy.
+        busy, _log_frames, _checkpointed = conn.execute(
+            "PRAGMA wal_checkpoint(PASSIVE)"
+        ).fetchone()
+        assert busy == 0, "committed WAL frames should already be checkpointed"
     finally:
         conn.close()
 
