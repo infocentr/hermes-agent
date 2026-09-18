@@ -142,7 +142,10 @@ position when that rule changes it. Other strategies may override priority, and
 reordering does not rebind credentials already held by a running session.
 
 Every successful pool selection increments `request_count`, regardless of strategy.
-Refresh-only lookups and peeks do not count. These are selection counters, not
+Refresh-only lookups and peeks do not count. Status reads (`hermes doctor`, the `/model`
+picker's provider rows, dashboard auth cards) are peeks: they never refresh, rotate, or
+bench a pool credential, so a token endpoint hiccup while the picker is open cannot hide
+a provider that is still serving requests. These are selection counters, not
 billing totals or a count of every inference request: a cached credential can serve
 multiple requests. Counts remain in memory until the next existing pool write
 (for example rotation, exhaustion, refresh, or an administrative change); this does
@@ -185,7 +188,8 @@ cooldown. Billing (`402`, usage-limit) and auth (`401`) failures still bench the
 
 **A dead OAuth login is reported, not benched.** When a refresh token is rejected for good
 (`invalid_grant`, `invalid_token`, `refresh_token_reused` — the token was revoked, or another program
-holding the same login rotated it first), the pool logs one WARNING naming the entry and the repair
+holding the same login rotated it first — or, for Nous, the profile holds no Portal login or token
+pair to refresh with), the pool logs one WARNING naming the entry and the repair
 command (`hermes auth add <provider>`), and the credential leaves rotation — marked `dead`, or dropped
 when it only mirrored a token file the pool has just cleared — until you sign in again. This applies to Anthropic, Codex, xAI
 and Nous OAuth logins alike. A dead credential never re-enters rotation on a timer, so a lost login
