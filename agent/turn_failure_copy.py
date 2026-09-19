@@ -28,6 +28,32 @@ def stamp_failure(result: Dict[str, Any], reason: str, retryable: bool) -> Dict[
     return result
 
 
+# ---- failed-turn transcript boundary ----------------------------------------------------------
+# The Hermes-authored assistant row that closes a durable turn which ended without one. A
+# transcript boundary, NOT the model's answer: no provider/model error or refusal detail is
+# ever interpolated (that rides ``final_response``). Owned here so the core closer
+# (``agent/conversation_loop.py::run_conversation``) and the gateway's own writer
+# (``gateway/run_turn.py::_hmwa_close_failed_turn``) say the same thing.
+
+FAILED_TURN_NOTICE = (
+    "Your request was not processed. Send it again if you still want me to carry it out."
+)
+PARTIAL_FAILED_TURN_NOTICE = (
+    "This turn did not complete. Some actions may already have run; verify their effects "
+    "before resending."
+)
+
+
+def failed_turn_notice(turn_messages: Any) -> str:
+    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run."""
+    for row in turn_messages or ():
+        if isinstance(row, dict) and (
+            row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
+        ):
+            return PARTIAL_FAILED_TURN_NOTICE
+    return FAILED_TURN_NOTICE
+
+
 def provider_label_for(provider: Any) -> str:
     """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…)."""
     from hermes_cli.models import provider_label
@@ -128,6 +154,10 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "{label} rejected this request as malformed, so the model didn't answer. Start a clean "
         "session with /new or switch models with /model; if it keeps happening, run `hermes doctor`."
     ),
+    FailoverReason.role_alternation.value: (
+        "{label} requires user and assistant turns to strictly alternate and rejected this "
+        "conversation's shape. Start a clean session with /new or switch models with /model."
+    ),
     FailoverReason.ssl_cert_verification.value: (
         "Hermes couldn't verify {label}'s security certificate, so the connection was refused. "
         "This is usually a corporate proxy or an outdated certificate store on this computer — "
@@ -226,6 +256,17 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "This conversation is too long for {model} and automatic shrinking is turned off in "
         "your settings (compression.enabled). Run /compress to shrink it now, /new to start "
         "fresh, or pick a model with a bigger context window."
+    ),
+    # Wording deliberately avoids the overflow phrases gateway/run_turn.py matches on
+    # (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
+    # message must stay in the transcript and the session must not be auto-reset.
+    "server_context_rejection": (
+        "The model server rejected this request as too large, but this conversation is only "
+        "about {tokens:,} tokens — well under the {window:,}-token window Hermes knows for "
+        "{model} — so shrinking it would not help. Another request on the same server (for "
+        "example a background memory review from an earlier session) was probably holding its "
+        "capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a "
+        "moment and send /retry; if it keeps happening, check the server's context setting."
     ),
     "stream_dropped_tool_call": (
         "The connection to {label} kept dropping while the model was writing a large action, "

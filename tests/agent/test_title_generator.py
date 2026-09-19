@@ -5,6 +5,9 @@ from unittest.mock import MagicMock, patch
 
 
 from agent.title_generator import (
+    MAX_TITLE_INPUT_CHARS,
+    build_title_input,
+    derive_title,
     generate_title,
     auto_title_session,
     maybe_auto_title,
@@ -16,6 +19,49 @@ from hermes_state import SessionDB
 
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
+
+    @pytest.mark.parametrize(
+        ("instruction", "paste_preview", "expected_parts"),
+        [
+            ("@file:/tmp/composer-pastes/pasted_content_1.txt", "Quarterly incident analysis for the database migration",
+             ["Quarterly incident analysis"]),
+            ("Analyze this", "Quarterly incident analysis for the database migration", ["Analyze this", "Quarterly incident analysis"]),
+            ("Prepare the deployment follow-up", "Quarterly incident analysis", ["Prepare the deployment follow-up", "Quarterly incident analysis"]),
+        ],
+    )
+    def test_generated_paste_preview_reaches_the_shared_title_input(self, instruction, paste_preview, expected_parts):
+        """A Desktop large paste stays an @file attachment for the turn, but its preview informs BOTH title
+        paths (derive_title instant + generate_title model input) through the one shared input."""
+        title_input = build_title_input(instruction, paste_preview)
+
+        assert all(part in title_input for part in expected_parts)
+        assert "@file:" not in title_input
+        # Paste-only opener (just the generated ref): the instant title is the paste's topic, not the path.
+        lead = paste_preview if instruction.startswith("@file:") else instruction
+        assert derive_title(instruction, paste_preview).startswith(lead[:12])
+
+    def test_expanded_paste_ref_footer_does_not_demote_the_preview(self):
+        """The titler receives the opener AFTER @-reference expansion: the generated ref carries a
+        `--- Context Warnings ---` (or `--- Attached Context ---`) footer, which must not turn a
+        paste-only opener into "instruction + trailing preview" (live wire finding on #114984)."""
+        ref = "@file:/home/u/.hermes/attachments/pasted_content_2026-09-18_14-09-43-735_d0ee85.txt"
+        preview = "Quarterly incident analysis for the database cluster"
+        for footer in (f"\n\n--- Context Warnings ---\n- {ref}: path is outside the allowed workspace",
+                       "\n\n--- Attached Context ---\n\n### file: pasted_content.txt\n" + preview):
+            title_input = build_title_input(ref + footer, preview)
+
+            assert title_input.startswith(preview)
+            assert "---" not in title_input and "@file:" not in title_input
+            assert derive_title(ref + footer, preview).startswith("Quarterly incident analysis")
+
+    def test_title_input_budget_and_manual_attachments_stay_unread(self):
+        title_input = build_title_input("Describe the release plan", "p" * MAX_TITLE_INPUT_CHARS)
+
+        assert len(title_input) == MAX_TITLE_INPUT_CHARS
+        assert title_input.startswith("Describe the release plan")
+        assert title_input.endswith("p" * 20)
+        # No preview => an ordinary manual attachment ref is never read for titling.
+        assert build_title_input("Summarize @file:notes.txt", None) == "Summarize @file:notes.txt"
 
 
 
