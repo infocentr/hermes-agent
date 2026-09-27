@@ -3505,6 +3505,32 @@ def _wait_for_external_cron_worker(
                 pass
 
 
+def _worker_interpreter() -> str:
+    """Interpreter for the external worker: the committed PM dependency environment.
+
+    ``sys.executable`` is NOT usable here.  Under the PM topology the gateway is
+    launched by a bare store interpreter and its dependencies are attached at
+    runtime by ``hermes_bootstrap`` -> ``pm.environments.activate_dependencies``.
+    ``-m cron.scheduler`` runs no bootstrap, so a bare ``sys.executable`` child
+    imports ``cron`` (pinned via PYTHONPATH) and then dies on the first
+    dependency -- ``ModuleNotFoundError: No module named 'ruamel'``.  Before PM,
+    ``sys.executable`` was the venv interpreter and carried the dependencies
+    itself, which is why this only broke on migration.
+
+    Falls back to ``sys.executable`` when no environment is committed (a bare
+    checkout / test tree), preserving the pre-PM behaviour.
+    """
+    try:
+        from pm.environments import project_python
+
+        candidate = project_python(Path(__file__).resolve().parent.parent)
+        if candidate.exists():
+            return str(candidate)
+    except Exception:
+        logger.debug("Could not resolve the PM worker interpreter", exc_info=True)
+    return sys.executable
+
+
 def _launch_external_cron_worker(job: dict) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
@@ -3522,7 +3548,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
     command = [
-        sys.executable,
+        _worker_interpreter(),
         "-m",
         "cron.scheduler",
         "--external-worker-file",
