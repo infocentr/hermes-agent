@@ -109,7 +109,15 @@ test('channel smoke binds the complete admitted request, not a commit-build iden
       expect(run('identity').status).not.toBe(0)
     }
   } finally { fs.rmSync(temp, { recursive: true, force: true }) }
-}, 15_000)
+// Local carry (2026-09-28): 15_000 -> 60_000. This test spawns five Node
+// children via spawnSync, and our runner-downgrade carry puts js-tests.yml on
+// the free 4-vCPU image (upstream uses 32 cores), where those spawns starve
+// under parallel vitest — it timed out at 15s in runs 36389516801 and
+// 36397500339 and was the ONLY thing failing the required gate. 15s was already
+// the outlier in this suite: every other spawn-heavy file here allows 30s and
+// generate-icons allows 180_000. A per-test argument OVERRIDES the config
+// testTimeout, which is why raising it in vitest.config.ts alone did nothing.
+}, 60_000)
 
 test('workspace admission rejects reuse and symlink escapes before creating anything outside runner temp', () => {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-paths-')))
