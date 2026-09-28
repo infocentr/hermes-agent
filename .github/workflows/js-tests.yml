@@ -14,8 +14,17 @@ jobs:
     #
     # One larger runner installs one time. vitest, tsc and eslint each size
     # their own worker pool from the core count.
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 30
+    #
+    # FORK CARRY (2026-09-28): our fork has no larger runners, so
+    # ubuntu-latest-32-core never gets scheduled -- the job sits `queued`
+    # forever. Because ci.yaml uses cancel-in-progress: false for pushes, that
+    # starves the whole `ci-<ref>` lane and every later run reports
+    # "0 jobs / pending". This was misdiagnosed as GitHub capacity twice
+    # (2026-09-25, 2026-09-26) before the label was found. Run on the free
+    # 4-vCPU image and give the serialized payload room (~612s of checks +
+    # one setup instead of 14). Re-apply on retunes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up the locked JS build toolchain

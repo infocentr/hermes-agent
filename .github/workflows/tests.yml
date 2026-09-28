@@ -24,9 +24,17 @@ jobs:
     # Local carry: our fork is a personal account without GitHub larger
     # runners, so ubuntu-latest-96-core hangs "waiting for a runner". Run on
     # the free public 4-core standard runner instead; the unsliced full suite
-    # needs a longer wall budget there, hence timeout 75 (upstream: 30 on 96c).
+    # needs a longer wall budget there (upstream: 30 on 96c).
+    #
+    # 75 -> 120 (2026-09-28): the suite outgrew the 75 min budget. Run
+    # 36299594373 started 11:13:42Z and was CANCELLED at 12:28:52Z — exactly
+    # 75 min — so the cap, not a push, killed our single most valuable signal
+    # (Run tests is what validates the carries). It had passed on the previous
+    # commit, i.e. we were sitting right on the boundary. 4 workers on 4 vCPUs
+    # cannot be sped up here, so widen the wall budget instead. If this starts
+    # expiring again, prefer investigating suite growth over another bump.
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -224,11 +232,43 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+  e2e-upgrade-plan:
+    # One e2e-upgrade shard per suite directory: the files directly under
+    # tests/e2e/core/upgrade ("core") plus every subdirectory that holds
+    # test_*.py (pm, git, handoff, network, hosts, ...). A new suite
+    # directory gets its own shard without editing this file, and no shard
+    # carries the whole tree's wall time against the 60-minute timeout.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: tests/e2e/core/upgrade
+      - name: List suite directories
+        id: plan
+        run: |
+          set -euo pipefail
+          shards=$(python3 - <<'PY'
+          import json, pathlib
+          root = pathlib.Path("tests/e2e/core/upgrade")
+          shards = ["core"] if any(root.glob("test_*.py")) else []
+          shards += sorted(d.name for d in root.iterdir()
+                           if d.is_dir() and not d.name.startswith(("_", ".")) and any(d.rglob("test_*.py")))
+          print(json.dumps(shards))
+          PY
+          )
+          echo "shards=$shards" | tee -a "$GITHUB_OUTPUT"
+
   e2e-upgrade:
     # tests/e2e/core/upgrade: a real N-1 -> HEAD `hermes update` (clean,
     # autostash, killed mid-pull / mid-deps, offline), fresh-process import and
-    # entrypoint smoke, and the config round-trip property matrix. Its own job:
-    # it needs full history + tags, bubblewrap, and one file runs ~5-15 min.
+    # entrypoint smoke, the config round-trip property matrix, and the lane
+    # suites below it (pm: PM environment lifecycle across updates, ...).
+    # Its own job: it needs full history + tags, bubblewrap, and one file
+    # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
     #
     # Local carry: this lane is STRUCTURALLY inapplicable to our fork. It resolves
     # "N-1" from the previous RELEASE tag, and we publish no releases — we only
@@ -238,9 +278,19 @@ jobs:
     # a real prior release of this repo. Nothing here reflects our code health, so
     # keep it for signal but never let it wedge the required gate. Revisit only if
     # this fork starts cutting releases.
+    #
+    # Local carry (runner downgrade): upstream shards this onto
+    # ubuntu-latest-32-core; our fork has no larger runners, so that hangs
+    # "waiting for a runner". Re-apply on retunes.
+    name: e2e-upgrade (${{ matrix.shard }})
+    needs: e2e-upgrade-plan
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.e2e-upgrade-plan.outputs.shards) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -327,14 +377,25 @@ jobs:
           source .venv/bin/activate
           python -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
 
-      - name: Run upgrade e2e tests
+      - name: Run upgrade e2e tests (${{ matrix.shard }})
         run: |
+          set -euo pipefail
           source .venv/bin/activate
-          scripts/run_tests.sh --include-integration tests/e2e/core/upgrade
+          if [ "$SHARD" = core ]; then
+            mapfile -t files < <(find tests/e2e/core/upgrade -maxdepth 1 -name 'test_*.py' | sort)
+          else
+            mapfile -t files < <(find "tests/e2e/core/upgrade/$SHARD" -name 'test_*.py' | sort)
+          fi
+          # A shard that collects nothing is a wiring bug, not a pass.
+          [ "${#files[@]}" -gt 0 ] || { echo "no test files for shard $SHARD" >&2; exit 1; }
+          printf 'shard %s: %s\n' "$SHARD" "${files[*]}"
+          scripts/run_tests.sh --include-integration "${files[@]}"
         env:
+          SHARD: ${{ matrix.shard }}
           # Each file drives real installs/updaters (process trees plus uv and
-          # git I/O); cpu_count of them at once starves their deadlines.
-          HERMES_TEST_WORKERS: "4"
+          # git I/O); cpu_count of them at once starves their deadlines. A
+          # shard holds at most ~7 files, so this runs each shard in one wave.
+          HERMES_TEST_WORKERS: "6"
           HERMES_TEST_FILE_TIMEOUT: "3000"
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
