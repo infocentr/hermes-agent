@@ -16,8 +16,22 @@ const reactUi: TestProjectConfiguration = {
     // cold start headroom without masking genuinely hung tests. Hooks pay the
     // same cold cost when a beforeEach does `vi.resetModules()` + `await
     // import(...)` (65 files); one timed out at 10s on CI (#120318).
-    testTimeout: 15_000,
-    hookTimeout: 30_000
+    // Local carry (2026-09-28): the numbers above were tuned for upstream's
+    // 32-core runner. Our runner-downgrade carry puts js-tests.yml on the free
+    // 4-vCPU image, where the same cold-start cost lands on ~8x less CPU, so
+    // raise the headroom in the same spirit and for the same reason.
+    testTimeout: 45_000,
+    hookTimeout: 60_000,
+    // `retry` is for a different failure than the timeouts: on 4 cores this
+    // suite loses render/effect races and fails an ASSERTION rather than timing
+    // out — run 36389516801 hit `desktop-install-overlay > dismisses a failed
+    // install on Escape`: "expected <h2/> to be null", i.e. it asserted before
+    // the dismiss landed. It is a known ROTATING flake (a different test each
+    // run) in code we carry ZERO delta in, so retrying is honest: a real break
+    // fails all three attempts, a scheduling race passes on the second. Prefer
+    // this to masking the whole js-tests lane, which would throw away the only
+    // JS signal we have. Drop with the runner downgrade.
+    retry: 2
   }
 }
 

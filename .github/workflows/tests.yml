@@ -270,14 +270,22 @@ jobs:
     # Its own job: it needs full history + tags, bubblewrap, and one file
     # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
     #
-    # Local carry: this lane is STRUCTURALLY inapplicable to our fork. It resolves
-    # "N-1" from the previous RELEASE tag, and we publish no releases — we only
-    # mirror main to fork+private. Observed 2026-09-25: every case ERRORed with
+    # Local carry: part of this lane is STRUCTURALLY inapplicable to our fork. It
+    # resolves "N-1" from the previous RELEASE tag, and we publish no releases — we
+    # only mirror main to fork+private. Observed 2026-09-25: every case ERRORed with
     # `could not import the N-1 DEFAULT_CONFIG: ModuleNotFoundError: No module
     # named 'hermes_cli.config_defaults'` because the N-1 install it builds is not
-    # a real prior release of this repo. Nothing here reflects our code health, so
-    # keep it for signal but never let it wedge the required gate. Revisit only if
-    # this fork starts cutting releases.
+    # a real prior release of this repo.
+    #
+    # NARROWED 2026-09-28: that was written when the lane was ONE job and all of it
+    # was hopeless. Upstream has since sharded it by suite directory, and run
+    # 36389516801 showed only `core` and `handoff` actually depend on the N-1
+    # release identity — `git`, `hosts`, `network` and `pm` all PASSED here. A
+    # blanket continue-on-error was therefore masking four shards that work, so a
+    # real regression in them would have been invisible. Mask only the two that
+    # cannot pass. Shards are derived from a directory listing, so a NEW shard
+    # arrives unmasked and fails loudly — the right default. Revisit if this fork
+    # starts cutting releases (then drop the mask entirely).
     #
     # Local carry (runner downgrade): upstream shards this onto
     # ubuntu-latest-32-core; our fork has no larger runners, so that hangs
@@ -285,7 +293,7 @@ jobs:
     name: e2e-upgrade (${{ matrix.shard }})
     needs: e2e-upgrade-plan
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: ${{ matrix.shard == 'core' || matrix.shard == 'handoff' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
