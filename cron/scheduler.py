@@ -3741,30 +3741,34 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _worker_interpreter() -> str:
-    """Interpreter for the external worker: the committed PM dependency environment.
+def _worker_launch_prefix() -> list[str]:
+    """Argv prefix that runs ``cron.scheduler`` with Hermes' dependencies attached.
 
-    ``sys.executable`` is NOT usable here.  Under the PM topology the gateway is
-    launched by a bare store interpreter and its dependencies are attached at
-    runtime by ``hermes_bootstrap`` -> ``pm.environments.activate_dependencies``.
-    ``-m cron.scheduler`` runs no bootstrap, so a bare ``sys.executable`` child
-    imports ``cron`` (pinned via PYTHONPATH) and then dies on the first
-    dependency -- ``ModuleNotFoundError: No module named 'ruamel'``.  Before PM,
-    ``sys.executable`` was the venv interpreter and carried the dependencies
-    itself, which is why this only broke on migration.
+    The worker must boot through the launcher, not a bare interpreter.  Under the
+    PM topology dependencies are NOT on any interpreter: ``hermes_bootstrap``
+    attaches them at runtime via ``pm.environments.activate_dependencies()``, and
+    ``-m cron.scheduler`` runs no bootstrap.
 
-    Falls back to ``sys.executable`` when no environment is committed (a bare
-    checkout / test tree), preserving the pre-PM behaviour.
+    Spawning it on the dependency venv's own interpreter instead does not work
+    either, and is actively worse: ``venv_sync.prepare_launch`` compares
+    ``sys.executable`` against ``resolve_store_python`` and re-execs when they
+    differ, so such a worker is relaunched by ``relaunch_command`` as
+    ``[store_python, "-I", "-c", "...runpy.run_module('cron.scheduler')..."]``
+    -- no bootstrap, and ``-I`` discards the PYTHONPATH pin from
+    ``cron.scheduler_worker_env`` -- which dies on the first dependency import.
+    That regression killed every agent-fire cron job for a week (2026-09-28..10-05)
+    while script-fire jobs, which never reach ``prepare_launch``, stayed green.
+
+    ``--run-module`` is the launcher's own entry for this; ``_launchers`` uses the
+    same shape for ``run_agent``. Falls back to ``sys.executable -m`` when no
+    launcher is published (bare checkout / test tree), the historical behaviour.
     """
-    try:
-        from pm.environments import project_python
-
-        candidate = project_python(Path(__file__).resolve().parent.parent)
-        if candidate.exists():
-            return str(candidate)
-    except Exception:
-        logger.debug("Could not resolve the PM worker interpreter", exc_info=True)
-    return sys.executable
+    repo_root = Path(__file__).resolve().parent.parent
+    launcher = repo_root / (".hermes/Scripts/hermes.exe" if os.name == "nt" else ".hermes/bin/hermes")
+    if launcher.exists():
+        return [str(launcher), "--run-module", "cron.scheduler"]
+    logger.debug("No published Hermes launcher at %s; falling back to -m", launcher)
+    return [sys.executable, "-m", "cron.scheduler"]
 
 
 def _launch_external_cron_worker(job: dict) -> bool:
@@ -3790,9 +3794,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
     command = [
-        _worker_interpreter(),
-        "-m",
-        "cron.scheduler",
+        *_worker_launch_prefix(),
         "--external-worker-file",
         str(payload_path),
         "--ack-file",
