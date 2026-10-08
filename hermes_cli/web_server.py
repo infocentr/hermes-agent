@@ -1265,19 +1265,6 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
         ws_ping_interval=ping_interval,
         ws_ping_timeout=ping_timeout,
-        # Local carry c22dcd314b RETIRED 2026-10-02 — superseded upstream.
-        # We carried timeout_graceful_shutdown=10 for the 04:31 dashboard
-        # SIGKILL: on SIGINT uvicorn's shutdown() waits for open connections,
-        # the long-lived /api/console WebSocket never closes on its own, so the
-        # wait was unbounded (default None) and the process hung until systemd's
-        # TimeoutStopSec (45s) fired SIGKILL (memory project_dashboard_sigkill_rootcause).
-        # Upstream now bounds the SAME call for its own reason (#76244, below),
-        # and 3s is STRICTER than our 10s while still satisfying our requirement
-        # of exiting well under 45s — so keeping both was not a tradeoff, it was
-        # a DUPLICATE KEYWORD ARGUMENT, i.e. a SyntaxError that broke every
-        # import of this module. git merged it cleanly because the two blocks
-        # never overlapped textually, and the carry signature check passed
-        # because it only greps for the string's presence.
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
         # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
         # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
