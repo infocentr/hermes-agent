@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import types
 from unittest.mock import patch, MagicMock
 
 import pytest
