@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
+import { simpleGit } from 'simple-git'
 import { afterEach, test, vi } from 'vitest'
 
 import {
@@ -101,7 +101,7 @@ test('gitFor suppresses only the known custom-binary warning and restores consol
   const spacedBin = String.raw`C:\Program Files\Git\cmd\git.exe`
   // `windowsGitHost()` resolves nothing in this process (no configured roots, no
   // HERMES_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates — the
-  // spaced `Program Files` path, which warns once per factory call.
+  // spaced `Program Files` path, which 3.x warned about once per factory call.
   const warnings: unknown[][] = []
   const originalWarn = console.warn
 
@@ -118,16 +118,23 @@ test('gitFor suppresses only the known custom-binary warning and restores consol
 
     assert.equal(console.warn, recordingWarn)
 
-    // The escape hatch used directly still warns: the message gitFor filters is a
-    // live emission of the installed simple-git, so the filter cannot go stale
-    // silently (an upgrade that rewords it fails this test, not production).
-    simpleGit({ baseDir: process.cwd(), binary: spacedBin, unsafe: { allowUnsafeCustomBinary: true } })
     console.warn('unrelated warning')
   } finally {
     console.warn = originalWarn
   }
 
-  assert.deepEqual(warnings, [[SIMPLE_GIT_UNSAFE_BINARY_WARN], ['unrelated warning']])
+  // simple-git 4.x emits NO warning for a restricted binary once the escape hatch
+  // is set (3.x warned once per factory call), so the five gitFor calls above
+  // contribute nothing and only the unrelated warning survives the filter.
+  assert.deepEqual(warnings, [['unrelated warning']])
+
+  // Keep the staleness check alive against a LIVE emission rather than a frozen
+  // copy: 4.x still uses this exact text for the throw when the hatch is absent,
+  // so an upgrade that rewords it fails here, not in production.
+  assert.throws(
+    () => simpleGit({ baseDir: process.cwd(), binary: spacedBin }),
+    (error: unknown) => String((error as Error).message).startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARN)
+  )
 })
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {

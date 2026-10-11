@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
+import { simpleGit } from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
 import { execGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'
@@ -19,14 +19,19 @@ const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
-// simple-git 3.x validates a custom binary path against an ASCII whitelist —
-// `isBadArgument` in node_modules/simple-git/dist/cjs/index.js accepts only
-// `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`. Everything outside it is "restricted": a
-// space in the default `C:\Program Files\Git\...`, the parentheses in
-// `Program Files (x86)`, the accented user name in `C:\Users\João\...`. Without
-// the escape hatch simple-git THROWS on such a path; with it, it console.warns
-// this exact message — the flag only downgrades the throw. Exported so gitFor
-// and its tests share one source of truth.
+// simple-git validates a custom binary path against an ASCII whitelist —
+// `isBadArgument` accepts only `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`. Everything
+// outside it is "restricted": a space in the default `C:\Program Files\Git\...`,
+// the parentheses in `Program Files (x86)`, the accented user name in
+// `C:\Users\João\...`. Without the escape hatch simple-git THROWS on such a path
+// with this exact message. Exported so gitFor and its tests share one source of
+// truth.
+//
+// 3.x ALSO console.warn'd the same text on every factory call when the hatch was
+// set (the flag only downgraded the throw). 4.x is silent — verified against
+// 4.0.2 — so the suppression in gitFor below is now a no-op. It is kept because
+// it is keyed to this exact string: if a future release reinstates the warning,
+// the Review pane stays quiet instead of spamming the console once per call.
 export const SIMPLE_GIT_UNSAFE_BINARY_WARN =
   'Invalid value supplied for custom binary, restricted characters must be removed or supply the unsafe.allowUnsafeCustomBinary option'
 
@@ -89,12 +94,12 @@ function gitFor(cwd, gitBin) {
     return makeGit()
   }
 
-  // With the escape hatch set, simple-git still console.warns that same message on
-  // every factory call — the flag only downgrades the throw to a warning. The
-  // binary was resolved by this process, never supplied by the renderer, so on
-  // Windows (where the standard git lives under a spaced "Program Files") that
-  // warning is pure console spam. Filter exactly that message, for the
-  // synchronous factory call only.
+  // simple-git 3.x console.warn'd that same message on every factory call even
+  // with the escape hatch set. 4.x no longer does. The binary was resolved by this
+  // process, never supplied by the renderer, so on Windows (where the standard git
+  // lives under a spaced "Program Files") that warning was pure console spam.
+  // Filter exactly that message, for the synchronous factory call only — a no-op
+  // on 4.x, and the guard if it ever comes back.
   const originalWarn = console.warn
 
   console.warn = (message?: unknown, ...rest: unknown[]) => {
