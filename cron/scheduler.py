@@ -289,9 +289,9 @@ def _strip_reasoning_preamble(text: str) -> str:
         return text
     best = -1
     for marker in _AGENT_REPORT_MARKERS:
-        idx = text.rfind(marker)
-        if idx > best:
-            best = idx
+        # max(), not an if: upstream's ruff selects PLR1730 (2026-10-11) and
+        # this carry is the only code in the tree that tripped it.
+        best = max(best, text.rfind(marker))
     if best <= 0:
         return text
     return text[best:].lstrip()
@@ -4185,7 +4185,7 @@ def _worktree_maintenance_repos() -> list[str]:
                 probe = subprocess.run(
                     ["git", "rev-parse", "--show-toplevel"],
                     capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=5, cwd=workdir)
+                    errors="replace", timeout=5, cwd=workdir, check=False)
                 if probe.returncode == 0 and probe.stdout.strip():
                     repos.add(probe.stdout.strip())
             except Exception:
