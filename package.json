@@ -67,7 +67,13 @@
     "postcss": "8.5.23",
     "tar": "7.5.22",
     "source-map-js": "1.2.2",
-    "http-cache-semantics": "4.3.0"
+    "http-cache-semantics": "4.3.0",
+    "axios": "1.20.0",
+    "fast-uri": "3.1.8",
+    "joi": "18.2.9",
+    "shell-quote": "1.11.0",
+    "@xmldom/xmldom@^0.8": "0.8.15",
+    "@xmldom/xmldom@^0.9": "0.9.12"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
