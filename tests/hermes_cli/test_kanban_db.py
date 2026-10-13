@@ -1662,9 +1662,19 @@ def test_resolve_hermes_argv_module_actually_runs():
 
     A unit test that pins the literal string is necessary but not
     sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
-    handling or its argparse setup, `python -m hermes_cli.main --version`
-    would fail and so would every dispatcher spawn that hits the fallback.
-    Run it as a real subprocess to catch that regression.
+    handling or its argparse setup, `python -m hermes_cli.main` would fail
+    and so would every dispatcher spawn that hits the fallback. Run it as a
+    real subprocess to catch that regression.
+
+    Probe with `--help`, NOT `--version`: `--version` is handled by
+    `_startup_fast.try_fast_version`, which short-circuits before the heavy
+    import wall and then calls `check_for_updates(passive=True)` — a real
+    git + urlopen update probe. Those are individually bounded (5s and 10s
+    each) but on a cold cache (24h TTL) their SUM can exceed any short
+    subprocess timeout, which is exactly how this test blew a 30s budget and
+    aborted the 2026-10-13 update at 188 commits. `--help` touches no
+    network, takes ~1.7s, and exercises MORE of the real dispatch path: the
+    full import wall and argparse setup, which `--version` never reaches.
     """
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
@@ -1675,9 +1685,11 @@ def test_resolve_hermes_argv_module_actually_runs():
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30, check=False)
+    # 60s, not 30: --help pays the full import wall, and this runs on a 2-vCPU
+    # box directly after the Docusaurus build and a 374-file vitest suite.
+    r = subprocess.run(argv + ["--help"], capture_output=True, text=True, timeout=60, check=False)
     assert r.returncode == 0, (
-        f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
+        f"`{' '.join(argv)} --help` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
 
