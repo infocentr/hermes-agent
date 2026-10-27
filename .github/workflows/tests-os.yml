@@ -11,8 +11,8 @@ name: OS-specific tests
 # reproducing any of the OS behaviour that branch exists for. This workflow
 # is where those markers actually execute:
 #
-#   macos    → ``-m platforms``    on macos-latest
-#   windows  → ``-m platforms``    on windows-latest and windows-latest-32-arm-core
+#   macos    → ``-m platforms``    on blacksmith-12vcpu-macos-latest
+#   windows  → ``-m platforms``    on blacksmith-32vcpu-windows-2025 and windows-latest-32-arm-core
 #
 # (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
 # foreign-OS ``platforms(...)`` markers on each host, so one shared ``-m
@@ -77,19 +77,6 @@ jobs:
   os-tests:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    # Local carry: the WINDOWS row only is non-blocking; macOS stays strict.
-    # Our runner-downgrade carry puts Windows on the free 4-vCPU image instead of
-    # upstream's 32-core, and the timing-sensitive WinAPI tests race there —
-    # observed 2026-09-25: test_local_runtime_processes.py::
-    # test_failed_setup_never_runs_child_and_releases_handles[assign|resume]
-    # "assert 'running' == 'stopped'" (2 failed, 6 passed) on a suspend/cleanup
-    # state read. We carry ZERO delta in that test or hermes_cli/local_runtime/,
-    # and this bot ships on Ubuntu — Windows correctness is upstream's domain and
-    # has no bearing on production here. Keep the lane for signal, don't let a
-    # runner limitation we cannot remove wedge the required gate.
-    # Drop this if we ever get larger runners. macOS deliberately NOT included:
-    # it passes on the free image, so it keeps gating.
-    continue-on-error: ${{ startsWith(matrix.runner, 'windows') }}
     timeout-minutes: ${{ matrix.timeout || 30 }}
     strategy:
       fail-fast: false
@@ -98,20 +85,26 @@ jobs:
           # Two slices: on the old free standard runner (3 cores, 3 workers) one lane ran
           # ~7.5 min and became the slowest required job once the Linux suite split.
           - name: macOS-only tests (1/2)
-            runner: macos-latest
+            runner: blacksmith-12vcpu-macos-latest
             marker: macos
             slice: 1/2
           - name: macOS-only tests (2/2)
-            runner: macos-latest
+            runner: blacksmith-12vcpu-macos-latest
             marker: macos
             slice: 2/2
           - name: Windows-only tests
-            # Local carry (runner downgrade): our fork has no larger runners
-            # (personal account), so windows-latest-32-core hangs "waiting for a
-            # runner". The free standard windows-latest handles the windows marker.
-            # Re-apply on retunes. Arm64 lane dropped (no free arm runner). See tests.yml.
-            runner: windows-latest
+            runner: blacksmith-32vcpu-windows-2025
             marker: windows
+          - name: Windows-only tests (arm64, 1/2)
+            runner: windows-latest-32-arm-core
+            marker: windows
+            timeout: 60
+            slice: 1/2
+          - name: Windows-only tests (arm64, 2/2)
+            runner: windows-latest-32-arm-core
+            marker: windows
+            timeout: 60
+            slice: 2/2
     steps:
       - name: Checkout code
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -252,16 +245,7 @@ jobs:
     # 32-core like os-tests' Windows row: seven files run in parallel and each spawns
     # process trees; on the 4-vCPU image the suite step took 153-171 s (job 4.7-5.6 min),
     # here 124 s (job 3.1 min), with headroom against scheduling-starved timeouts.
-    #
-    # Local carry (runner downgrade): our fork has no larger runners, so this runs on
-    # the free 4-vCPU windows-latest — precisely the image the comment above says is
-    # marginal. Observed 2026-09-25: test_terminal_tool.py[powershell] hit
-    # `TimeoutExpired after 180.0s` (13 passed, 1 failed) purely on scheduling
-    # starvation, not a code fault. Keep the lane for signal but don't let a runner
-    # limitation wedge the required gate. Same treatment as tests.yml's e2e job.
-    # Drop the continue-on-error if we ever get larger runners.
-    runs-on: windows-latest
-    continue-on-error: true
+    runs-on: blacksmith-32vcpu-windows-2025
     timeout-minutes: 25
     steps:
       - name: Checkout code

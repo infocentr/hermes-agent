@@ -83,7 +83,7 @@ jobs:
     # takes minutes and not seconds when the cache misses. `nix flake check`
     # builds 21 checks, and --max-jobs defaults to the core count. It uses the
     # wider runner with no more configuration.
-    runs-on: ubuntu-latest  # local carry: fork has no larger runners (see tests.yml)
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 60
     steps:
       - name: Checkout code

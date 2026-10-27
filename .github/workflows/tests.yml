@@ -43,20 +43,8 @@ jobs:
     # scale linearly. run_tests_parallel.py partitions from the checkout alone, so
     # both slices agree on the split without a planning job.
     name: Run tests (${{ matrix.slice }}/2)
-    # Local carry (runner downgrade): our fork is a personal account with no
-    # larger runners, so ubuntu-latest-32-core hangs "waiting for a runner".
-    # Both slices run on the free 4-vCPU image.
-    #
-    # ADOPTING upstream's slicing is an UPGRADE here (2026-10-02), not a
-    # concession. We had been running the whole suite UNSLICED on one free
-    # runner at timeout 120 — raised from 75 on 2026-09-28 after the cap killed
-    # run 36299594373 at exactly 75 min — and a typical green run still took
-    # ~86 min, i.e. back near the ceiling. Two free runners in parallel is
-    # roughly double the CPU we had, so each slice does about half the work.
-    # 75 min per slice restores a wide margin. If BOTH slices start approaching
-    # it, investigate suite growth rather than bumping again.
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -125,16 +113,7 @@ jobs:
           scripts/run_tests.sh
         env:
           HERMES_TEST_SLICE: ${{ matrix.slice }}/2
-          # Local carry: upstream sets 32 = one worker per core on their 32-core
-          # runner. Our runner-downgrade carry puts both slices on the free
-          # 4-vCPU image, where 32 workers is 8x oversubscription. At the old
-          # 96-vs-4 ratio that thrashed, starved the 2s-timeout / ReDoS /
-          # cleanup timing tests and timed out collection on ~18 files
-          # (verified 2026-08-22). Keep upstream's one-worker-per-core rule, at
-          # OUR core count. Re-apply on upstream retunes of this value.
-          HERMES_TEST_WORKERS: 4
-          # A healthy 44-test compression file takes ~197s alone and can exceed
-          # the 300s default under load before its duration is cached (upstream #).
+          HERMES_TEST_WORKERS: 32
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
@@ -163,20 +142,7 @@ jobs:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
     # writer processes per test; a 4-vCPU runner serialises them into timeouts.
     if: inputs.e2e
-    # Local carry (runner downgrade): our fork has no larger runners; upstream's
-    # ubuntu-latest-32-core hangs "waiting for a runner". Re-apply on retunes.
-    # NOTE upstream's comment directly above is why continue-on-error stays:
-    # they state the 4-vCPU runner serialises these into timeouts, which is
-    # exactly the image we are forced onto.
-    runs-on: ubuntu-latest
-    # Local carry: the e2e suite (async slash-command tests with tight mock
-    # timing) flakes under load on our free standard runner — e.g.
-    # test_plaintext_restart_gateway_in_group "mock called 0 times" — while
-    # passing reliably in isolation locally. It's not a real regression and
-    # real e2e coverage lives upstream, so keep it running for signal but don't
-    # let a flake block the required gate on our fork. Drop if we get faster
-    # runners. See the runner-downgrade carry in this file.
-    continue-on-error: true
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -304,7 +270,7 @@ jobs:
     # carries the whole tree's wall time against the 60-minute timeout.
     # Skipping this job skips every e2e-upgrade shard with it.
     if: inputs.e2e_upgrade
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
@@ -346,31 +312,9 @@ jobs:
     # suites below it (pm: PM environment lifecycle across updates, ...).
     # Its own job: it needs full history + tags, bubblewrap, and one file
     # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
-    #
-    # Local carry: part of this lane is STRUCTURALLY inapplicable to our fork. It
-    # resolves "N-1" from the previous RELEASE tag, and we publish no releases — we
-    # only mirror main to fork+private. Observed 2026-09-25: every case ERRORed with
-    # `could not import the N-1 DEFAULT_CONFIG: ModuleNotFoundError: No module
-    # named 'hermes_cli.config_defaults'` because the N-1 install it builds is not
-    # a real prior release of this repo.
-    #
-    # NARROWED 2026-09-28: that was written when the lane was ONE job and all of it
-    # was hopeless. Upstream has since sharded it by suite directory, and run
-    # 36389516801 showed only `core` and `handoff` actually depend on the N-1
-    # release identity — `git`, `hosts`, `network` and `pm` all PASSED here. A
-    # blanket continue-on-error was therefore masking four shards that work, so a
-    # real regression in them would have been invisible. Mask only the two that
-    # cannot pass. Shards are derived from a directory listing, so a NEW shard
-    # arrives unmasked and fails loudly — the right default. Revisit if this fork
-    # starts cutting releases (then drop the mask entirely).
-    #
-    # Local carry (runner downgrade): upstream shards this onto
-    # ubuntu-latest-32-core; our fork has no larger runners, so that hangs
-    # "waiting for a runner". Re-apply on retunes.
     name: e2e-upgrade (${{ matrix.shard }})
     needs: e2e-upgrade-plan
-    runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.shard == 'core' || matrix.shard == 'handoff' }}
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 60
     strategy:
       fail-fast: false
