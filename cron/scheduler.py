@@ -3615,6 +3615,39 @@ def _wait_for_external_cron_worker(
                 pass
 
 
+def _worker_launch_prefix() -> list[str]:
+    """Argv prefix that runs ``cron.scheduler`` with Hermes' dependencies attached.
+
+    The worker must boot through the published launcher, not a bare interpreter.
+    Under the PM topology dependencies are not installed into any interpreter:
+    ``hermes_bootstrap`` attaches them at runtime via
+    ``pm.environments.activate_dependencies()``, and ``-m cron.scheduler`` runs no
+    bootstrap, so the worker dies on its first dependency import.
+
+    Spawning it on the dependency venv's own interpreter is not a fix either, and
+    is worse: ``venv_sync.prepare_launch`` compares ``sys.executable`` against
+    ``resolve_store_python`` and re-execs when they differ, so the worker is
+    relaunched by ``relaunch_command`` as
+    ``[store_python, "-I", "-c", "...runpy.run_module('cron.scheduler')..."]`` --
+    no bootstrap, and ``-I`` discards the ``PYTHONPATH`` pin that
+    ``cron.scheduler_worker_env`` sets up.
+
+    Only agent-fire jobs are affected: script-fire jobs never reach
+    ``prepare_launch``, so they keep working and the breakage looks selective.
+
+    ``--run-module`` is the launcher's own entry for this shape; ``_launchers``
+    uses it for ``run_agent`` too. Falls back to ``sys.executable -m`` when no
+    launcher is published (a bare checkout or test tree), which is the historical
+    behaviour.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    launcher = repo_root / (".hermes/Scripts/hermes.exe" if os.name == "nt" else ".hermes/bin/hermes")
+    if launcher.exists():
+        return [str(launcher), "--run-module", "cron.scheduler"]
+    logger.debug("No published Hermes launcher at %s; falling back to -m", launcher)
+    return [sys.executable, "-m", "cron.scheduler"]
+
+
 def _launch_external_cron_worker(job: dict) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
@@ -3638,9 +3671,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
     command = [
-        sys.executable,
-        "-m",
-        "cron.scheduler",
+        *_worker_launch_prefix(),
         "--external-worker-file",
         str(payload_path),
         "--ack-file",
