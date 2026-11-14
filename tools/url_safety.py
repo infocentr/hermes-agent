@@ -384,29 +384,43 @@ def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[s
     return None
 
 
-def is_safe_url(url: str) -> bool:
-    """True if the URL target is not a private/internal address. Resolves the hostname and checks
-    every answer; fails closed on DNS errors, unexpected exceptions and URLs whose authority other
-    clients could parse differently (userinfo included). ``allow_private_urls`` skips private-IP
-    blocking, but cloud metadata endpoints remain blocked regardless."""
+# Model-facing refusal messages, one per cause. Every one still refuses the URL; they only tell the
+# agent WHY, so a domain that does not resolve (expired, lame delegation) reads as "dead site, move
+# on" instead of a security block worth retrying.
+BLOCKED_SCHEME_MSG = "Blocked: unsupported URL scheme (only http and https URLs can be fetched)"
+BLOCKED_AMBIGUOUS_AUTHORITY_MSG = "Blocked: ambiguous URL authority ({reason})"
+BLOCKED_NO_HOSTNAME_MSG = "Blocked: URL has no hostname"
+BLOCKED_METADATA_MSG = "Blocked: URL targets a cloud metadata endpoint"
+BLOCKED_DNS_FAILED_MSG = (
+    "Blocked: hostname did not resolve (DNS lookup failed) — the site may be offline or the domain expired"
+)
+BLOCKED_PRIVATE_MSG = "Blocked: URL targets a private or internal network address"
+BLOCKED_CHECK_FAILED_MSG = "Blocked: URL safety check failed"
+
+
+def url_block_reason(url: str) -> Optional[str]:
+    """Why *url* is refused by the SSRF guard, as a model-facing message, or None if it is safe.
+    Resolves the hostname and checks every answer; fails closed on DNS errors, unexpected exceptions
+    and URLs whose authority other clients could parse differently (userinfo included).
+    ``allow_private_urls`` skips private-IP blocking, but cloud metadata endpoints remain blocked."""
     try:
         scheme = (urlparse(url).scheme or "").strip().lower()
         if scheme not in _HTTP_SCHEMES:
             logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
-            return False
+            return BLOCKED_SCHEME_MSG
         reason = _authority_ambiguity(url)
         if reason is not None:
             # The reason only: the URL may carry userinfo credentials.
             logger.warning("Blocked request — ambiguous URL authority: %s", reason)
-            return False
+            return BLOCKED_AMBIGUOUS_AUTHORITY_MSG.format(reason=reason)
         hostname = _url_hostname(url)
         if not hostname:
-            return False
+            return BLOCKED_NO_HOSTNAME_MSG
 
         # Metadata hostnames are blocked BEFORE consulting the toggle.
         if hostname in _BLOCKED_HOSTNAMES:
             logger.warning("Blocked request to internal hostname: %s", hostname)
-            return False
+            return BLOCKED_METADATA_MSG
         allow_all_private = _global_allow_private_urls()
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
         allow_private = allow_all_private or allow_private_ip
@@ -421,31 +435,53 @@ def is_safe_url(url: str) -> bool:
                 logger.debug(
                     "DNS resolution failed for %s — proxy configured, allowing through for proxy-side resolution",
                     hostname)
-                return True
+                return None
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
-            return False
+            return BLOCKED_DNS_FAILED_MSG
         for raw, ip_str, ip in _iter_resolved_ips(addr_info):
             if ip is None:
                 logger.warning("Blocked request — unparseable IP address %r for hostname %s", raw, hostname)
-                return False
+                return BLOCKED_CHECK_FAILED_MSG
             reason = _resolved_ip_block_reason(ip, allow_private)
             if reason is not None:
                 logger.warning("Blocked request to %s: %s -> %s", reason, hostname, ip_str)
-                return False
+                return BLOCKED_METADATA_MSG if reason == "cloud metadata address" else BLOCKED_PRIVATE_MSG
         if allow_all_private:
             logger.debug("Allowing private/internal resolution (security.allow_private_urls=true): %s", hostname)
         elif allow_private_ip:
             logger.debug("Allowing trusted hostname despite private/internal resolution: %s", hostname)
-        return True
+        return None
     except Exception as exc:
         # Fail closed: parsing edge cases must not become SSRF bypass vectors.
-        logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
-        return False
+        logger.warning("Blocked request — URL safety check error for %s: %s", url, exc, exc_info=True)
+        return BLOCKED_CHECK_FAILED_MSG
+
+
+def is_safe_url(url: str) -> bool:
+    """True if the URL target is not a private/internal address (see :func:`url_block_reason`)."""
+    return url_block_reason(url) is None
+
+
+async def async_url_block_reason(url: str) -> Optional[str]:
+    """:func:`url_block_reason` with the blocking DNS work off the event loop."""
+    return await asyncio.to_thread(url_block_reason, url)
 
 
 async def async_is_safe_url(url: str) -> bool:
     """:func:`is_safe_url` with the blocking DNS work off the event loop."""
     return await asyncio.to_thread(is_safe_url, url)
+
+
+async def async_url_block_message(url: str) -> str:
+    """Model-facing refusal text for a URL a caller's safety gate just refused. Callers gate on
+    :func:`async_is_safe_url` (the long-standing patch point) and ask for the message only on the
+    refusal path; a URL that passes on this second look still gets a generic refusal, never None."""
+    return await async_url_block_reason(url) or BLOCKED_CHECK_FAILED_MSG
+
+
+def url_block_message(url: str) -> str:
+    """Sync twin of :func:`async_url_block_message`."""
+    return url_block_reason(url) or BLOCKED_CHECK_FAILED_MSG
 
 
 class SSRFConnectionBlocked(ValueError):

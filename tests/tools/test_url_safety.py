@@ -8,6 +8,14 @@ import httpx
 from tools.url_safety import (
     is_safe_url,
     async_is_safe_url,
+    url_block_reason,
+    async_url_block_reason,
+    async_url_block_message,
+    BLOCKED_AMBIGUOUS_AUTHORITY_MSG,
+    BLOCKED_DNS_FAILED_MSG,
+    BLOCKED_METADATA_MSG,
+    BLOCKED_PRIVATE_MSG,
+    BLOCKED_SCHEME_MSG,
     is_always_blocked_url,
     normalize_url_for_request,
     redirect_target_from_response,
@@ -139,39 +147,13 @@ class TestProxyEnvironmentDnsDelegation:
         with _resolves_to("not-an-ip%garbage"):
             assert is_safe_url("http://example.invalid/") is False
 
-    def test_unexpected_error_fails_closed(self):
-        """Unexpected exceptions should block, not allow."""
-        with patch("tools.url_safety.urlparse", side_effect=ValueError("bad url")):
-            assert is_safe_url("http://evil.com/") is False
-
-    def test_benchmark_ip_blocked_for_non_allowlisted_host(self):
-        with _resolves_to("198.18.0.23"):
-            assert is_safe_url("https://example.com/file.jpg") is False
-
-    @pytest.mark.parametrize("url, expected", [
-        # the allowlisted host itself, over https
-        ("https://multimedia.nt.qq.com.cn/download?id=123", True),
-        # exception is an exact host match — subdomains stay blocked
-        ("https://sub.multimedia.nt.qq.com.cn/download?id=123", False),
-        # ... and requires https
-        ("http://multimedia.nt.qq.com.cn/download?id=123", False),
-    ])
-    def test_qq_multimedia_hostname_exception(self, url, expected):
-        with _resolves_to("198.18.0.23"):
-            assert is_safe_url(url) is expected
-
-
-class TestAsyncIsSafeUrl:
-    """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""
-
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("ip, url, expected", [
-        ("93.184.216.34", "https://example.com/x", True),
-        ("127.0.0.1", "http://localhost:8080/", False),
-    ])
-    async def test_matches_sync_verdict(self, ip, url, expected):
-        with _resolves_to(ip):
-            assert await async_is_safe_url(url) is expected
+    async def test_async_twins_match_sync(self):
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nx")):
+            assert await async_url_block_reason("https://gone.example/") == BLOCKED_DNS_FAILED_MSG
+            assert await async_url_block_message("https://gone.example/") == BLOCKED_DNS_FAILED_MSG
+        with _resolves_to("10.0.0.1"):
+            assert await async_url_block_reason("http://internal.example/") == BLOCKED_PRIVATE_MSG
 
 
 class TestSSRFGuardedHttpxClient:

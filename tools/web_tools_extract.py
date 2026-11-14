@@ -194,7 +194,7 @@ async def _final_url_refusal(fetched: dict) -> Optional[dict]:
     """Refusal entry when a page's reported (post-redirect) URL fails the website policy or SSRF gate,
     in the shape Firecrawl's own redirect re-check returns; None when it passes. A policy check that
     raises refuses (fail closed): the requested URL passed, but nothing vouches for this one."""
-    from tools.url_safety import async_is_safe_url
+    from tools.url_safety import async_is_safe_url, async_url_block_message
     from tools.website_policy import check_website_access
     final_url, title = fetched["url"], fetched.get("title", "")
     refusal = {"url": final_url, "title": title, "content": "", "raw_content": ""}
@@ -209,7 +209,7 @@ async def _final_url_refusal(fetched: dict) -> Optional[dict]:
         return {**refusal, "error": blocked["message"], "blocked_by_policy": policy}
     if not await async_is_safe_url(final_url):
         logger.info("Blocked redirected web_extract for unsafe final URL: %s", final_url)
-        return {**refusal, "error": "Blocked: URL targets a private or internal network address"}
+        return {**refusal, "error": await async_url_block_message(final_url)}
     return None
 
 

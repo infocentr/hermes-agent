@@ -19,7 +19,7 @@ _firecrawl_client = _firecrawl_client_config = _parallel_client = _async_paralle
 from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecrawl_api_key
 from tools.debug_helpers import DebugSession
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
-from tools.url_safety import async_is_safe_url
+from tools.url_safety import async_is_safe_url, async_url_block_message
 from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
@@ -414,9 +414,7 @@ async def web_extract_tool(urls: list[Any], format: str | None = None, char_limi
                 safe_urls.append(url)
                 safe_indices.append(index)
             else:
-                ssrf_blocked[index] = _result_entry(
-                    url, "Blocked: URL targets a private or internal network address"
-                )
+                ssrf_blocked[index] = _result_entry(url, await async_url_block_message(url))
 
         results = []
         if safe_urls:

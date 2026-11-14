@@ -37,8 +37,12 @@ def _policy(monkeypatch, blocked_host: str | None = "blocked.example", unsafe_ho
     async def safe(url):
         return not (unsafe_host and unsafe_host in url)
 
+    async def reason(url):
+        return None if await safe(url) else "Blocked: URL targets a private or internal network address"
+
     monkeypatch.setattr("tools.website_policy.check_website_access", check)
     monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+    monkeypatch.setattr("tools.url_safety.async_url_block_reason", reason)
 
 
 def _keenable(monkeypatch, target):

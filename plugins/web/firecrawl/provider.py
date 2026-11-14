@@ -15,7 +15,7 @@ import httpx
 from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, search_fail, search_ok, setup_schema, with_origin_status
 from tools import managed_tool_gateway as _gateway
 from tools import tool_backend_helpers as _backend_helpers
-from tools.url_safety import is_safe_url
+from tools.url_safety import is_safe_url, url_block_message
 # Module-level (cheap import) so tests can monkeypatch the policy gate on this module.
 from tools.website_policy import check_website_access
 
@@ -279,7 +279,6 @@ def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, bl
 
 
 _SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_exec instead."
-_UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
 
 
 def _final_url(metadata: dict[str, Any], requested: str) -> str:
@@ -323,7 +322,7 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
         title, final_url = metadata.get("title", ""), _final_url(metadata, url)
         if not is_safe_url(final_url):
             logger.info("Blocked redirected web_extract for unsafe final URL: %s", final_url)
-            return _error_entry(final_url, _UNSAFE_REDIRECT_MSG, title=title, raw=True)
+            return _error_entry(final_url, url_block_message(final_url), title=title, raw=True)
         if final_blocked := check_website_access(final_url):
             logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
             return _error_entry(final_url, final_blocked["message"], title=title, raw=True, blocked=final_blocked)
