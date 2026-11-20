@@ -664,7 +664,7 @@ def _apply_journal_policy(
         except sqlite3.OperationalError:
             if force_delete:
                 raise
-    from hermes_state_wal import apply_wal_with_fallback
+    from sqlite_support import apply_wal_with_fallback
 
     apply_wal_with_fallback(conn, db_label=db_label)
     row = conn.execute("PRAGMA journal_mode").fetchone()
@@ -806,7 +806,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
         # Read-only file/sidecar preflight first, so a stray read-only kanban.db
         # fails actionably instead of "attempt to write a readonly database".
         # See #12508.
-        from hermes_state import preflight_db_writability
+        from sqlite_support import preflight_db_writability
         preflight_db_writability(path, db_label=f"kanban.db ({path.name})")
         # Cheap byte-level header check before any sqlite connection, then the
         # full integrity probe (cached per path via _INITIALIZED_PATHS).
