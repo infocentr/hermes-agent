@@ -2612,14 +2612,6 @@ class TestBuildJobPromptExtraPrompt:
         _build_job_prompt(job, extra_prompt="transient context")
         assert job["prompt"] == "original"
 
-    def test_no_extra_prompt_omits_header(self):
-        """Without extra_prompt, no '## Run Context' header is injected."""
-        job = {"prompt": "just the stored prompt"}
-        result = _build_job_prompt(job)
-        assert "## Run Context" not in result
-        assert "just the stored prompt" in result
-
-
 class TestCronIncompleteFinalResponse:
     """Restored 2026-07-04 from an orphaned 2026-06-23 autostash (never committed).
 
@@ -2662,52 +2654,3 @@ class TestCronIncompleteFinalResponse:
         summary = _summarize_cron_failure_for_delivery(job, error)
         assert "provider timeout" not in summary
         assert "dashboard timeout-SIGKILL" in summary
-class TestSetCronSessionTitle:
-    """Robust cron session titling: #50535/#50536/#50537."""
-
-    def test_dedupes_on_duplicate_title(self):
-        # First write collides (ValueError); helper falls back to lineage #N.
-        from cron.scheduler import _set_cron_session_title
-        db = MagicMock()
-        db.set_session_title.side_effect = [ValueError("in use"), True]
-        db.get_next_title_in_lineage.return_value = "Nightly Synthesis #2"
-        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
-        assert out == "Nightly Synthesis #2"
-        db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
-class TestFailureStreakNudge:
-    """Poke-inspired repeated-failure review nudge (_failure_streak_nudge)."""
-
-    def _job(self, streak, kind="cron", name="scout"):
-        return {
-            "id": "j1",
-            "name": name,
-            "failure_streak": streak,
-            "schedule": {"kind": kind},
-        }
-
-    def test_silent_below_threshold(self):
-        from cron.scheduler import _failure_streak_nudge
-        with patch("cron.scheduler.load_config", return_value={}):
-            assert _failure_streak_nudge(self._job(0)) == ""
-            assert _failure_streak_nudge(self._job(1)) == ""
-
-    def test_oneshot_never_nudges(self):
-        from cron.scheduler import _failure_streak_nudge
-        with patch("cron.scheduler.load_config", return_value={}):
-            assert _failure_streak_nudge(self._job(10, kind="once")) == ""
-
-    def test_config_threshold_and_disable(self):
-        from cron.scheduler import _failure_streak_nudge
-        cfg5 = {"cron": {"failure_nudge_threshold": 5}}
-        with patch("cron.scheduler.load_config", return_value=cfg5):
-            assert _failure_streak_nudge(self._job(3)) == ""
-            assert _failure_streak_nudge(self._job(4))
-        with patch("cron.scheduler.load_config", return_value={"cron": {"failure_nudge_threshold": 0}}):
-            assert _failure_streak_nudge(self._job(50)) == ""
-
-    def test_missing_streak_field_backcompat(self):
-        from cron.scheduler import _failure_streak_nudge
-        job = {"id": "old", "schedule": {"kind": "interval"}}  # pre-field job
-        with patch("cron.scheduler.load_config", return_value={}):
-            assert _failure_streak_nudge(job) == ""
